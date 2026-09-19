@@ -50,3 +50,8 @@ class School(Base):
         "UserAssignment",
         back_populates="school",
     )
+
+    class_divisions = relationship(
+        "ClassDivision",
+        back_populates="school",
+    )
