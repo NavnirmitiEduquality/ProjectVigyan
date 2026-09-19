@@ -50,6 +50,13 @@ class ClassDivision(Base):
         default="ACTIVE",
     )
 
+    data_origin: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="PRODUCTION",
+        server_default="PRODUCTION",
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -77,6 +84,10 @@ class ClassDivision(Base):
         CheckConstraint(
             "status IN ('ACTIVE', 'INACTIVE')",
             name="ck_class_division_status",
+        ),
+        CheckConstraint(
+            "data_origin IN ('PRODUCTION', 'DEMO', 'TEST')",
+            name="ck_class_division_data_origin",
         ),
     )
 

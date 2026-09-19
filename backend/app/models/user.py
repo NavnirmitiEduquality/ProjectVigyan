@@ -56,6 +56,13 @@ class User(Base):
         default="ACTIVE",
     )
 
+    data_origin: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="PRODUCTION",
+        server_default="PRODUCTION",
+    )
+    
     email_verified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
@@ -77,6 +84,13 @@ class User(Base):
         nullable=False,
         server_default=func.now(),
         onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "data_origin IN ('PRODUCTION', 'DEMO', 'TEST')",
+            name="ck_user_data_origin",
+        ),
     )
 
     user_roles = relationship(
