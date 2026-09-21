@@ -65,7 +65,11 @@ EXPECTED_SCHOOL_COUNT = 4
 EXPECTED_CLASS_DIVISION_COUNT = 12
 EXPECTED_STUDENT_COUNT = 580
 EXPECTED_PARA_TEACHER_COUNT = 4
-EXPECTED_ASSIGNMENT_COUNT = 4
+EXPECTED_DATA_MANAGER_COUNT = 1
+
+EXPECTED_SCHOOL_ASSIGNMENT_COUNT = 4
+EXPECTED_PROJECT_ASSIGNMENT_COUNT = 1
+EXPECTED_ASSIGNMENT_COUNT = 5
 
 DEMO_USER_PASSWORD_ENV = "DEMO_USER_PASSWORD"
 
@@ -142,7 +146,13 @@ PARA_TEACHERS = [
     },
 ]
 
-
+DATA_MANAGERS = [
+    {
+        "user_code": "DM001",
+        "full_name": "Demo Data Manager",
+        "email": "dm001@demo.vigyan.com",
+    },
+]
 # ---------------------------------------------------------------------------
 # Synthetic name pools
 # ---------------------------------------------------------------------------
@@ -654,6 +664,50 @@ def create_para_teachers(
 
     return user_count, assignment_count
 
+def create_data_managers(
+    db: Session,
+    password_hash: str,
+) -> int:
+    data_manager_role = get_role(db, "DATA_MANAGER")
+
+    user_count = 0
+
+    for item in DATA_MANAGERS:
+        user = User(
+            user_code=item["user_code"],
+            full_name=item["full_name"],
+            email=item["email"],
+            password_hash=password_hash,
+            status="ACTIVE",
+            data_origin=DATA_ORIGIN,
+        )
+
+        db.add(user)
+        db.flush()
+
+        user_role = UserRole(
+            user_id=user.id,
+            role_id=data_manager_role.id,
+            is_active=True,
+        )
+
+        assignment = UserAssignment(
+            user_id=user.id,
+            scope_type="PROJECT",
+            school_id=None,
+            start_date=date.today(),
+            end_date=None,
+            is_active=True,
+        )
+
+        db.add(user_role)
+        db.add(assignment)
+
+        user_count += 1
+
+    db.flush()
+
+    return user_count
 
 def validate_database(
     db: Session,
@@ -661,14 +715,57 @@ def validate_database(
     school_count = get_existing_demo_count(db, School)
     class_count = get_existing_demo_count(db, ClassDivision)
     student_count = get_existing_demo_count(db, Student)
-    user_count = get_existing_demo_count(db, User)
 
-    assignment_count = db.scalar(
+    para_teacher_count = db.scalar(
+        select(func.count())
+        .select_from(User)
+        .join(UserRole, User.id == UserRole.user_id)
+        .join(Role, Role.id == UserRole.role_id)
+        .where(
+            User.data_origin == DATA_ORIGIN,
+            Role.code == "PARA_TEACHER",
+            UserRole.is_active.is_(True),
+        )
+    ) or 0
+
+    data_manager_count = db.scalar(
+        select(func.count())
+        .select_from(User)
+        .join(UserRole, User.id == UserRole.user_id)
+        .join(Role, Role.id == UserRole.role_id)
+        .where(
+            User.data_origin == DATA_ORIGIN,
+            Role.code == "DATA_MANAGER",
+            UserRole.is_active.is_(True),
+        )
+    ) or 0
+
+    school_assignment_count = db.scalar(
         select(func.count())
         .select_from(UserAssignment)
         .join(User, User.id == UserAssignment.user_id)
-        .where(User.data_origin == DATA_ORIGIN)
+        .where(
+            User.data_origin == DATA_ORIGIN,
+            UserAssignment.scope_type == "SCHOOL",
+            UserAssignment.is_active.is_(True),
+        )
     ) or 0
+
+    project_assignment_count = db.scalar(
+        select(func.count())
+        .select_from(UserAssignment)
+        .join(User, User.id == UserAssignment.user_id)
+        .where(
+            User.data_origin == DATA_ORIGIN,
+            UserAssignment.scope_type == "PROJECT",
+            UserAssignment.is_active.is_(True),
+        )
+    ) or 0
+
+    assignment_count = (
+        school_assignment_count
+        + project_assignment_count
+    )
 
     if school_count != EXPECTED_SCHOOL_COUNT:
         raise RuntimeError(
@@ -689,18 +786,46 @@ def validate_database(
             f"students, found {student_count}."
         )
 
-    if user_count != EXPECTED_PARA_TEACHER_COUNT:
+    if para_teacher_count != EXPECTED_PARA_TEACHER_COUNT:
         raise RuntimeError(
-            f"Validation failed: expected {EXPECTED_PARA_TEACHER_COUNT} "
-            f"Para-Teachers, found {user_count}."
+            f"Validation failed: expected "
+            f"{EXPECTED_PARA_TEACHER_COUNT} Para-Teachers, "
+            f"found {para_teacher_count}."
+        )
+
+    if data_manager_count != EXPECTED_DATA_MANAGER_COUNT:
+        raise RuntimeError(
+            f"Validation failed: expected "
+            f"{EXPECTED_DATA_MANAGER_COUNT} Data Manager, "
+            f"found {data_manager_count}."
+        )
+
+    if (
+        school_assignment_count
+        != EXPECTED_SCHOOL_ASSIGNMENT_COUNT
+    ):
+        raise RuntimeError(
+            f"Validation failed: expected "
+            f"{EXPECTED_SCHOOL_ASSIGNMENT_COUNT} school assignments, "
+            f"found {school_assignment_count}."
+        )
+
+    if (
+        project_assignment_count
+        != EXPECTED_PROJECT_ASSIGNMENT_COUNT
+    ):
+        raise RuntimeError(
+            f"Validation failed: expected "
+            f"{EXPECTED_PROJECT_ASSIGNMENT_COUNT} project assignments, "
+            f"found {project_assignment_count}."
         )
 
     if assignment_count != EXPECTED_ASSIGNMENT_COUNT:
         raise RuntimeError(
-            f"Validation failed: expected {EXPECTED_ASSIGNMENT_COUNT} "
-            f"assignments, found {assignment_count}."
+            f"Validation failed: expected "
+            f"{EXPECTED_ASSIGNMENT_COUNT} assignments, "
+            f"found {assignment_count}."
         )
-
 
 def print_summary(db: Session) -> None:
     print()
@@ -711,20 +836,66 @@ def print_summary(db: Session) -> None:
     school_count = get_existing_demo_count(db, School)
     class_count = get_existing_demo_count(db, ClassDivision)
     student_count = get_existing_demo_count(db, Student)
-    user_count = get_existing_demo_count(db, User)
 
-    assignment_count = db.scalar(
+    para_teacher_count = db.scalar(
+        select(func.count())
+        .select_from(User)
+        .join(UserRole, User.id == UserRole.user_id)
+        .join(Role, Role.id == UserRole.role_id)
+        .where(
+            User.data_origin == DATA_ORIGIN,
+            Role.code == "PARA_TEACHER",
+            UserRole.is_active.is_(True),
+        )
+    ) or 0
+
+    data_manager_count = db.scalar(
+        select(func.count())
+        .select_from(User)
+        .join(UserRole, User.id == UserRole.user_id)
+        .join(Role, Role.id == UserRole.role_id)
+        .where(
+            User.data_origin == DATA_ORIGIN,
+            Role.code == "DATA_MANAGER",
+            UserRole.is_active.is_(True),
+        )
+    ) or 0
+
+    school_assignment_count = db.scalar(
         select(func.count())
         .select_from(UserAssignment)
         .join(User, User.id == UserAssignment.user_id)
-        .where(User.data_origin == DATA_ORIGIN)
+        .where(
+            User.data_origin == DATA_ORIGIN,
+            UserAssignment.scope_type == "SCHOOL",
+            UserAssignment.is_active.is_(True),
+        )
     ) or 0
 
-    print(f"Schools created       : {school_count}")
-    print(f"Class divisions       : {class_count}")
-    print(f"Students created      : {student_count}")
-    print(f"Para-teachers created : {user_count}")
-    print(f"Assignments created   : {assignment_count}")
+    project_assignment_count = db.scalar(
+        select(func.count())
+        .select_from(UserAssignment)
+        .join(User, User.id == UserAssignment.user_id)
+        .where(
+            User.data_origin == DATA_ORIGIN,
+            UserAssignment.scope_type == "PROJECT",
+            UserAssignment.is_active.is_(True),
+        )
+    ) or 0
+
+    assignment_count = (
+        school_assignment_count
+        + project_assignment_count
+    )
+
+    print(f"Schools created          : {school_count}")
+    print(f"Class divisions          : {class_count}")
+    print(f"Students created         : {student_count}")
+    print(f"Para-teachers created    : {para_teacher_count}")
+    print(f"Data Managers created    : {data_manager_count}")
+    print(f"School assignments       : {school_assignment_count}")
+    print(f"Project assignments      : {project_assignment_count}")
+    print(f"Total assignments        : {assignment_count}")
 
     print()
     print("School distribution:")
@@ -755,16 +926,24 @@ def print_summary(db: Session) -> None:
 
     print()
     print("Validation:")
-    print("  ✓ School count = 4")
-    print("  ✓ Class/division count = 12")
-    print("  ✓ Student count = 580")
-    print("  ✓ Para-teacher count = 4")
-    print("  ✓ Assignment count = 4")
+    print(f"  ✓ School count = {school_count}")
+    print(f"  ✓ Class/division count = {class_count}")
+    print(f"  ✓ Student count = {student_count}")
+    print(f"  ✓ Para-teacher count = {para_teacher_count}")
+    print(f"  ✓ Data Manager count = {data_manager_count}")
+    print(
+        f"  ✓ School assignment count = "
+        f"{school_assignment_count}"
+    )
+    print(
+        f"  ✓ Project assignment count = "
+        f"{project_assignment_count}"
+    )
+    print(f"  ✓ Total assignment count = {assignment_count}")
     print("  ✓ All generated records marked DEMO")
     print()
     print("Demo data generated successfully.")
     print("=" * 48)
-
 
 # ---------------------------------------------------------------------------
 # Main workflow
@@ -819,6 +998,11 @@ def generate_demo_data() -> None:
                 password_hash,
             )
 
+            data_manager_count = create_data_managers(
+                db,
+                password_hash,
+            )
+
             if student_count != EXPECTED_STUDENT_COUNT:
                 raise RuntimeError(
                     f"Expected {EXPECTED_STUDENT_COUNT} students, "
@@ -831,10 +1015,16 @@ def generate_demo_data() -> None:
                     f"Para-Teachers, generated {user_count}."
                 )
 
-            if assignment_count != EXPECTED_ASSIGNMENT_COUNT:
+            if assignment_count != EXPECTED_SCHOOL_ASSIGNMENT_COUNT:
                 raise RuntimeError(
-                    f"Expected {EXPECTED_ASSIGNMENT_COUNT} assignments, "
-                    f"generated {assignment_count}."
+                    f"Expected {EXPECTED_SCHOOL_ASSIGNMENT_COUNT} "
+                    f"school assignments, generated {assignment_count}."
+                )
+
+            if data_manager_count != EXPECTED_DATA_MANAGER_COUNT:
+                raise RuntimeError(
+                    f"Expected {EXPECTED_DATA_MANAGER_COUNT} "
+                    f"Data Manager, generated {data_manager_count}."
                 )
 
             validate_database(db)
