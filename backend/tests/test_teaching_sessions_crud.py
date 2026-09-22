@@ -986,3 +986,316 @@ def test_start_nonexistent_session_returns_not_found():
     assert response.json()["detail"] == (
         "Teaching session not found."
     )
+
+def test_complete_teaching_session_requires_authentication():
+    """
+    Completing a teaching session requires authentication.
+    """
+
+    response = client.post(
+        "/api/v1/sessions/"
+        "00000000-0000-0000-0000-000000000000/complete"
+    )
+
+    assert response.status_code == 401
+
+
+def test_para_teacher_can_complete_in_progress_session():
+    """
+    A Para-Teacher can complete an in-progress session
+    in their assigned school.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    class_division = get_first_class_division(token)
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+        json={
+            "class_division_id": class_division["id"],
+            "session_date": "2026-09-25",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    session_id = create_response.json()["id"]
+
+    start_response = client.post(
+        f"/api/v1/sessions/{session_id}/start",
+        headers=auth_headers(token),
+    )
+
+    assert start_response.status_code == 200
+
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/complete",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+
+    data = response.json()
+
+    assert data["id"] == session_id
+    assert data["status"] == "COMPLETED"
+    assert data["actual_start_time"] is not None
+    assert data["actual_end_time"] is not None
+    assert data["duration_minutes"] is not None
+    assert data["duration_minutes"] >= 0
+
+
+def test_complete_session_records_actual_end_time():
+    """
+    Completing a session records an actual UTC end timestamp.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    class_division = get_first_class_division(token)
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+        json={
+            "class_division_id": class_division["id"],
+            "session_date": "2026-09-25",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    session_id = create_response.json()["id"]
+
+    start_response = client.post(
+        f"/api/v1/sessions/{session_id}/start",
+        headers=auth_headers(token),
+    )
+
+    assert start_response.status_code == 200
+
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/complete",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200
+
+    actual_end_time = response.json()["actual_end_time"]
+
+    parsed = datetime.fromisoformat(
+        actual_end_time.replace("Z", "+00:00")
+    )
+
+    assert parsed.tzinfo is not None
+
+
+def test_complete_session_calculates_duration():
+    """
+    Completing a session calculates duration from the
+    server-controlled start and end timestamps.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    class_division = get_first_class_division(token)
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+        json={
+            "class_division_id": class_division["id"],
+            "session_date": "2026-09-25",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    session_id = create_response.json()["id"]
+
+    start_response = client.post(
+        f"/api/v1/sessions/{session_id}/start",
+        headers=auth_headers(token),
+    )
+
+    assert start_response.status_code == 200
+
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/complete",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["actual_start_time"] is not None
+    assert data["actual_end_time"] is not None
+    assert data["duration_minutes"] >= 0
+
+
+def test_cannot_complete_planned_session():
+    """
+    A planned session cannot be completed directly.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    class_division = get_first_class_division(token)
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+        json={
+            "class_division_id": class_division["id"],
+            "session_date": "2026-09-25",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    session_id = create_response.json()["id"]
+
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/complete",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 409
+
+    assert response.json()["detail"] == (
+        "Only in-progress teaching sessions "
+        "can be completed."
+    )
+
+
+def test_cannot_complete_already_completed_session():
+    """
+    A completed session cannot be completed again.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    class_division = get_first_class_division(token)
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+        json={
+            "class_division_id": class_division["id"],
+            "session_date": "2026-09-25",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    session_id = create_response.json()["id"]
+
+    start_response = client.post(
+        f"/api/v1/sessions/{session_id}/start",
+        headers=auth_headers(token),
+    )
+
+    assert start_response.status_code == 200
+
+    first_response = client.post(
+        f"/api/v1/sessions/{session_id}/complete",
+        headers=auth_headers(token),
+    )
+
+    assert first_response.status_code == 200
+
+    second_response = client.post(
+        f"/api/v1/sessions/{session_id}/complete",
+        headers=auth_headers(token),
+    )
+
+    assert second_response.status_code == 409
+
+    assert second_response.json()["detail"] == (
+        "Only in-progress teaching sessions "
+        "can be completed."
+    )
+
+
+def test_para_teacher_cannot_complete_session_from_another_school():
+    """
+    PT001 cannot complete a session belonging to PT002's school.
+    """
+
+    pt001_token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    pt002_token = login(
+        PARA_TEACHERS["PT002"]["email"]
+    )
+
+    pt002_division = get_first_class_division(
+        pt002_token
+    )
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(pt002_token),
+        json={
+            "class_division_id": pt002_division["id"],
+            "session_date": "2026-09-25",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    session_id = create_response.json()["id"]
+
+    start_response = client.post(
+        f"/api/v1/sessions/{session_id}/start",
+        headers=auth_headers(pt002_token),
+    )
+
+    assert start_response.status_code == 200
+
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/complete",
+        headers=auth_headers(pt001_token),
+    )
+
+    assert response.status_code == 403
+
+    assert response.json()["detail"] == (
+        "You are not authorized to access this school."
+    )
+
+
+def test_complete_nonexistent_session_returns_not_found():
+    """
+    Completing a non-existent session returns 404.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    response = client.post(
+        "/api/v1/sessions/"
+        "00000000-0000-0000-0000-000000000000/complete",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 404
+
+    assert response.json()["detail"] == (
+        "Teaching session not found."
+    )

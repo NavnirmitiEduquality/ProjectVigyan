@@ -289,6 +289,102 @@ def start_teaching_session(
 
 
 @router.post(
+    "/{session_id}/complete",
+    response_model=TeachingSessionResponse,
+)
+def complete_teaching_session(
+    session_id: UUID,
+    current_user: User = Depends(
+        require_permission("session.update")
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    Complete an in-progress teaching session.
+
+    The transition is server-controlled:
+    IN_PROGRESS -> COMPLETED
+
+    The server records the actual end time and calculates
+    the session duration from the actual start and end times.
+    """
+
+    teaching_session = (
+        db.query(TeachingSession)
+        .join(
+            ClassDivision,
+            TeachingSession.class_division_id
+            == ClassDivision.id,
+        )
+        .filter(
+            TeachingSession.id == session_id
+        )
+        .first()
+    )
+
+    if not teaching_session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Teaching session not found.",
+        )
+
+    require_school_access(
+        teaching_session.class_division.school_id,
+        current_user,
+        db,
+    )
+
+    if teaching_session.status != "IN_PROGRESS":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Only in-progress teaching sessions "
+                "can be completed."
+            ),
+        )
+
+    if teaching_session.actual_start_time is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Teaching session has no actual start time."
+            ),
+        )
+
+    actual_end_time = datetime.now(timezone.utc)
+
+    duration_seconds = (
+        actual_end_time - teaching_session.actual_start_time
+    ).total_seconds()
+
+    if duration_seconds < 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Invalid teaching session time range.",
+        )
+
+    teaching_session.actual_end_time = actual_end_time
+    teaching_session.duration_minutes = int(
+        duration_seconds // 60
+    )
+    teaching_session.status = "COMPLETED"
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Unable to complete teaching session.",
+        )
+
+    db.refresh(teaching_session)
+
+    return teaching_session
+
+
+@router.post(
     "",
     response_model=TeachingSessionResponse,
     status_code=status.HTTP_201_CREATED,
