@@ -626,3 +626,160 @@ def test_list_sessions_returns_empty_list_for_no_matching_filter():
     assert response.status_code == 200
 
     assert response.json() == []
+
+
+def test_get_teaching_session_requires_authentication():
+    """
+    Getting a teaching session must require authentication.
+    """
+
+    response = client.get(
+        "/api/v1/sessions/"
+        "00000000-0000-0000-0000-000000000000"
+    )
+
+    assert response.status_code == 401
+
+
+def test_para_teacher_can_get_session_from_assigned_school():
+    """
+    A Para-Teacher can retrieve a session belonging to
+    their assigned school.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    class_division = get_first_class_division(token)
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+        json={
+            "class_division_id": class_division["id"],
+            "session_date": "2026-09-24",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    created_session = create_response.json()
+
+    response = client.get(
+        f"/api/v1/sessions/{created_session['id']}",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+
+    data = response.json()
+
+    assert data["id"] == created_session["id"]
+    assert data["class_division_id"] == class_division["id"]
+    assert data["session_date"] == "2026-09-24"
+    assert data["status"] == "PLANNED"
+
+
+def test_para_teacher_cannot_get_session_from_another_school():
+    """
+    PT001 must not retrieve a session belonging to PT002's school.
+    """
+
+    pt001_token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    pt002_token = login(
+        PARA_TEACHERS["PT002"]["email"]
+    )
+
+    pt002_division = get_first_class_division(
+        pt002_token
+    )
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(pt002_token),
+        json={
+            "class_division_id": pt002_division["id"],
+            "session_date": "2026-09-24",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    session_id = create_response.json()["id"]
+
+    response = client.get(
+        f"/api/v1/sessions/{session_id}",
+        headers=auth_headers(pt001_token),
+    )
+
+    assert response.status_code == 403
+
+    assert response.json()["detail"] == (
+        "You are not authorized to access this school."
+    )
+
+
+def test_nonexistent_teaching_session_returns_not_found():
+    """
+    A non-existent teaching session returns 404.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    response = client.get(
+        "/api/v1/sessions/"
+        "00000000-0000-0000-0000-000000000000",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 404
+
+    assert response.json()["detail"] == (
+        "Teaching session not found."
+    )
+
+
+def test_data_manager_can_get_project_session():
+    """
+    Data Manager has project-wide session.view access.
+    """
+
+    para_teacher_token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    class_division = get_first_class_division(
+        para_teacher_token
+    )
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(para_teacher_token),
+        json={
+            "class_division_id": class_division["id"],
+            "session_date": "2026-09-24",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    session_id = create_response.json()["id"]
+
+    data_manager_token = login(DATA_MANAGER)
+
+    response = client.get(
+        f"/api/v1/sessions/{session_id}",
+        headers=auth_headers(data_manager_token),
+    )
+
+    assert response.status_code == 200, response.text
+
+    data = response.json()
+
+    assert data["id"] == session_id

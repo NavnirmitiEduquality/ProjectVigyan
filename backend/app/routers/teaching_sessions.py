@@ -173,6 +173,50 @@ def list_teaching_sessions(
         .all()
     )
 
+
+@router.get(
+    "/{session_id}",
+    response_model=TeachingSessionResponse,
+)
+def get_teaching_session(
+    session_id: UUID,
+    current_user: User = Depends(
+        require_permission("session.view")
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    Get a single teaching session within the current
+    user's authorized data scope.
+    """
+
+    teaching_session = (
+        db.query(TeachingSession)
+        .join(
+            ClassDivision,
+            TeachingSession.class_division_id
+            == ClassDivision.id,
+        )
+        .filter(
+            TeachingSession.id == session_id
+        )
+        .first()
+    )
+
+    if not teaching_session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Teaching session not found.",
+        )
+
+    require_school_access(
+        teaching_session.class_division.school_id,
+        current_user,
+        db,
+    )
+
+    return teaching_session
+
 @router.post(
     "",
     response_model=TeachingSessionResponse,
