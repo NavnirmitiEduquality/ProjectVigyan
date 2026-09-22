@@ -5,10 +5,9 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
-    SmallInteger,
     String,
-    Uuid,
     UniqueConstraint,
+    Uuid,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -16,8 +15,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
 
-class Student(Base):
-    __tablename__ = "students"
+class SessionAttendance(Base):
+    __tablename__ = "session_attendance"
 
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
@@ -25,31 +24,18 @@ class Student(Base):
         default=uuid.uuid4,
     )
 
-    student_code: Mapped[str] = mapped_column(
-        String(30),
-        unique=True,
+    teaching_session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "teaching_sessions.id",
+            ondelete="RESTRICT",
+        ),
         nullable=False,
         index=True,
     )
 
-    full_name: Mapped[str] = mapped_column(
-        String(150),
-        nullable=False,
-    )
-
-    gender: Mapped[str] = mapped_column(
-        String(20),
-        nullable=False,
-    )
-
-    roll_no: Mapped[int] = mapped_column(
-        SmallInteger,
-        nullable=False,
-    )
-
-    class_division_id: Mapped[uuid.UUID] = mapped_column(
+    student_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey(
-            "class_divisions.id",
+            "students.id",
             ondelete="RESTRICT",
         ),
         nullable=False,
@@ -59,7 +45,6 @@ class Student(Base):
     status: Mapped[str] = mapped_column(
         String(20),
         nullable=False,
-        default="ACTIVE",
     )
 
     data_origin: Mapped[str] = mapped_column(
@@ -68,7 +53,7 @@ class Student(Base):
         default="PRODUCTION",
         server_default="PRODUCTION",
     )
-    
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -84,30 +69,26 @@ class Student(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "class_division_id",
-            "roll_no",
-            name="uq_student_class_division_roll_no",
+            "teaching_session_id",
+            "student_id",
+            name="uq_session_attendance_session_student",
         ),
         CheckConstraint(
-            "roll_no > 0 AND roll_no <= 999",
-            name="ck_student_roll_no_range",
-        ),
-        CheckConstraint(
-            "status IN ('ACTIVE', 'INACTIVE')",
-            name="ck_student_status",
+            "status IN ('PRESENT', 'ABSENT')",
+            name="ck_session_attendance_status",
         ),
         CheckConstraint(
             "data_origin IN ('PRODUCTION', 'DEMO', 'TEST')",
-            name="ck_student_data_origin",
+            name="ck_session_attendance_data_origin",
         ),
     )
 
-    class_division = relationship(
-        "ClassDivision",
-        back_populates="students",
+    teaching_session = relationship(
+        "TeachingSession",
+        back_populates="attendance_records",
     )
 
-    attendance_records = relationship(
-        "SessionAttendance",
-        back_populates="student",
+    student = relationship(
+        "Student",
+        back_populates="attendance_records",
     )

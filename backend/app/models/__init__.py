@@ -5,6 +5,7 @@ from app.models.school import School
 from app.models.student import Student
 from app.models.user import User, UserAssignment, UserRole
 from app.models.teaching_session import TeachingSession
+from app.models.session_attendance import SessionAttendance
 
 __all__ = [
     "User",
@@ -18,4 +19,5 @@ __all__ = [
     "Student",
     "AuthSession",
     "TeachingSession",
+    "SessionAttendance",
 ]

@@ -153,3 +153,8 @@ class TeachingSession(Base):
         "User",
         back_populates="teaching_sessions",
     )
+
+    attendance_records = relationship(
+        "SessionAttendance",
+        back_populates="teaching_session",
+    )
