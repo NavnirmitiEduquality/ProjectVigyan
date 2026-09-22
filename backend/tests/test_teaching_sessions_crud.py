@@ -408,3 +408,221 @@ def test_remarks_are_trimmed():
     assert response.status_code == 201, response.text
 
     assert response.json()["remarks"] == "Session remarks"
+
+
+def test_list_teaching_sessions_requires_authentication():
+    """
+    Teaching session listing must require authentication.
+    """
+
+    response = client.get("/api/v1/sessions")
+
+    assert response.status_code == 401
+
+
+def test_para_teacher_can_list_sessions_from_assigned_school():
+    """
+    A Para-Teacher can list sessions belonging to their
+    assigned school.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    class_division = get_first_class_division(token)
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+        json={
+            "class_division_id": class_division["id"],
+            "session_date": "2026-09-23",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    response = client.get(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+
+    sessions = response.json()
+
+    assert sessions
+
+    assert all(
+        session["class_division_id"]
+        == class_division["id"]
+        for session in sessions
+    )
+
+
+def test_para_teacher_cannot_list_another_school_sessions():
+    """
+    PT001 must not see sessions belonging to PT002's school.
+    """
+
+    pt001_token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    pt002_token = login(
+        PARA_TEACHERS["PT002"]["email"]
+    )
+
+    pt002_division = get_first_class_division(
+        pt002_token
+    )
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(pt002_token),
+        json={
+            "class_division_id": pt002_division["id"],
+            "session_date": "2026-09-23",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    response = client.get(
+        "/api/v1/sessions",
+        headers=auth_headers(pt001_token),
+    )
+
+    assert response.status_code == 200, response.text
+
+    sessions = response.json()
+
+    assert all(
+        session["class_division_id"]
+        != pt002_division["id"]
+        for session in sessions
+    )
+
+
+def test_data_manager_can_list_project_sessions():
+    """
+    Data Manager has project-wide session.view access.
+    """
+
+    token = login(DATA_MANAGER)
+
+    response = client.get(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+
+    assert isinstance(response.json(), list)
+
+
+def test_list_sessions_can_filter_by_status():
+    """
+    The session list can be filtered by status.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    response = client.get(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+        params={
+            "status_filter": "PLANNED",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+
+    sessions = response.json()
+
+    assert all(
+        session["status"] == "PLANNED"
+        for session in sessions
+    )
+
+
+def test_list_sessions_can_filter_by_date():
+    """
+    The session list can be filtered by session date.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    response = client.get(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+        params={
+            "session_date": "2026-09-22",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+
+    sessions = response.json()
+
+    assert all(
+        session["session_date"] == "2026-09-22"
+        for session in sessions
+    )
+
+
+def test_list_sessions_can_filter_by_class_division():
+    """
+    The session list can be filtered by class division.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    class_division = get_first_class_division(token)
+
+    response = client.get(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+        params={
+            "class_division_id": class_division["id"],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+
+    sessions = response.json()
+
+    assert all(
+        session["class_division_id"]
+        == class_division["id"]
+        for session in sessions
+    )
+
+
+def test_list_sessions_returns_empty_list_for_no_matching_filter():
+    """
+    A valid query with no matching sessions returns an empty list.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    response = client.get(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+        params={
+            "session_date": "2099-01-01",
+        },
+    )
+
+    assert response.status_code == 200
+
+    assert response.json() == []

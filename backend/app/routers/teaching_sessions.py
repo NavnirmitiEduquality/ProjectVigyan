@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import (
+    get_authorized_school_ids,
     require_permission,
     require_school_access,
 )
@@ -98,6 +99,79 @@ class TeachingSessionCreate(BaseModel):
 
         return self
 
+
+@router.get(
+    "",
+    response_model=list[TeachingSessionResponse],
+)
+def list_teaching_sessions(
+    status_filter: str | None = None,
+    session_date: date | None = None,
+    class_division_id: UUID | None = None,
+    current_user: User = Depends(
+        require_permission("session.view")
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    List teaching sessions within the current user's
+    authorized data scope.
+
+    Project-wide users can see sessions across all schools.
+    School-scoped users can see sessions only for their
+    authorized schools.
+    """
+
+    authorized_school_ids = get_authorized_school_ids(
+        current_user,
+        db,
+    )
+
+    query = (
+        db.query(TeachingSession)
+        .join(
+            ClassDivision,
+            TeachingSession.class_division_id
+            == ClassDivision.id,
+        )
+    )
+
+    # Apply school-level authorization.
+    if authorized_school_ids is not None:
+        if not authorized_school_ids:
+            return []
+
+        query = query.filter(
+            ClassDivision.school_id.in_(
+                authorized_school_ids
+            )
+        )
+
+    # Optional filters.
+    if status_filter is not None:
+        query = query.filter(
+            TeachingSession.status == status_filter
+        )
+
+    if session_date is not None:
+        query = query.filter(
+            TeachingSession.session_date == session_date
+        )
+
+    if class_division_id is not None:
+        query = query.filter(
+            TeachingSession.class_division_id
+            == class_division_id
+        )
+
+    return (
+        query
+        .order_by(
+            TeachingSession.session_date.desc(),
+            TeachingSession.created_at.desc(),
+        )
+        .all()
+    )
 
 @router.post(
     "",
