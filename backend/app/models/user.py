@@ -105,6 +105,11 @@ class User(Base):
         cascade="all, delete-orphan",
     )
 
+    teaching_sessions = relationship(
+        "TeachingSession",
+        back_populates="para_teacher",
+    )
+
 
 class UserRole(Base):
     __tablename__ = "user_roles"

@@ -4,6 +4,7 @@ from app.models.role import Permission, Role, RolePermission
 from app.models.school import School
 from app.models.student import Student
 from app.models.user import User, UserAssignment, UserRole
+from app.models.teaching_session import TeachingSession
 
 __all__ = [
     "User",
@@ -16,4 +17,5 @@ __all__ = [
     "ClassDivision",
     "Student",
     "AuthSession",
+    "TeachingSession",
 ]

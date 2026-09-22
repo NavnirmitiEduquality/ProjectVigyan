@@ -81,6 +81,21 @@ def get_first_class_division(token: str) -> dict:
 
     return divisions[0]
 
+def delete_class_division(class_division_id: str) -> None:
+    db = SessionLocal()
+
+    try:
+        class_division = (
+            db.query(ClassDivision)
+            .filter(ClassDivision.id == UUID(class_division_id))
+            .first()
+        )
+
+        if class_division:
+            db.delete(class_division)
+            db.commit()
+    finally:
+        db.close()
 
 @pytest.mark.parametrize(
     "email",
@@ -205,13 +220,6 @@ def test_data_manager_can_create_class_division():
     class_division_id = data["id"]
 
     delete_class_division(class_division_id)
-
-    # Cleanup through direct database access is intentionally avoided.
-    # Make the test idempotent by removing the record through SQLAlchemy
-    # only if this test environment already supports fixture cleanup.
-    #
-    # For now, the generated test division remains uniquely identifiable.
-
 
 def test_duplicate_class_division_returns_conflict():
     """
@@ -389,6 +397,7 @@ def test_data_manager_can_update_class_division():
     finally:
         delete_class_division(class_division["id"])
 
+
 def test_empty_class_division_update_is_rejected():
     """
     An empty PATCH request must be rejected.
@@ -409,7 +418,6 @@ def test_empty_class_division_update_is_rejected():
     assert response.json()["detail"] == (
         "No fields provided for update."
     )
-
 
 def test_class_division_school_is_immutable():
     """
@@ -480,19 +488,3 @@ def test_class_division_data_origin_is_server_controlled():
     assert data["data_origin"] == "PRODUCTION"
 
     delete_class_division(data["id"])
-
-def delete_class_division(class_division_id: str) -> None:
-    db = SessionLocal()
-
-    try:
-        class_division = (
-            db.query(ClassDivision)
-            .filter(ClassDivision.id == UUID(class_division_id))
-            .first()
-        )
-
-        if class_division:
-            db.delete(class_division)
-            db.commit()
-    finally:
-        db.close()

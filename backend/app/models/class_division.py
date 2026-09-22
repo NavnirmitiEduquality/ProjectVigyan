@@ -100,3 +100,8 @@ class ClassDivision(Base):
         "Student",
         back_populates="class_division",
     )
+
+    teaching_sessions = relationship(
+        "TeachingSession",
+        back_populates="class_division",
+    )
