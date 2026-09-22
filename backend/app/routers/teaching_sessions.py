@@ -1,4 +1,4 @@
-from datetime import date, time, datetime
+from datetime import date, time, datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -216,6 +216,77 @@ def get_teaching_session(
     )
 
     return teaching_session
+
+
+@router.post(
+    "/{session_id}/start",
+    response_model=TeachingSessionResponse,
+)
+def start_teaching_session(
+    session_id: UUID,
+    current_user: User = Depends(
+        require_permission("session.update")
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    Start a planned teaching session.
+
+    The transition is server-controlled:
+    PLANNED -> IN_PROGRESS
+    """
+
+    teaching_session = (
+        db.query(TeachingSession)
+        .join(
+            ClassDivision,
+            TeachingSession.class_division_id
+            == ClassDivision.id,
+        )
+        .filter(
+            TeachingSession.id == session_id
+        )
+        .first()
+    )
+
+    if not teaching_session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Teaching session not found.",
+        )
+
+    require_school_access(
+        teaching_session.class_division.school_id,
+        current_user,
+        db,
+    )
+
+    if teaching_session.status != "PLANNED":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Only planned teaching sessions "
+                "can be started."
+            ),
+        )
+
+    teaching_session.status = "IN_PROGRESS"
+    teaching_session.actual_start_time = datetime.now(timezone.utc)
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Unable to start teaching session.",
+        )
+
+    db.refresh(teaching_session)
+
+    return teaching_session
+
 
 @router.post(
     "",

@@ -1,3 +1,4 @@
+from datetime import datetime
 import os
 
 import pytest
@@ -783,3 +784,205 @@ def test_data_manager_can_get_project_session():
     data = response.json()
 
     assert data["id"] == session_id
+
+
+def test_start_teaching_session_requires_authentication():
+    """
+    Starting a teaching session requires authentication.
+    """
+
+    response = client.post(
+        "/api/v1/sessions/"
+        "00000000-0000-0000-0000-000000000000/start"
+    )
+
+    assert response.status_code == 401
+
+def test_para_teacher_can_start_planned_session():
+    """
+    A Para-Teacher can start a planned session
+    in their assigned school.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    class_division = get_first_class_division(token)
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+        json={
+            "class_division_id": class_division["id"],
+            "session_date": "2026-09-25",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    session_id = create_response.json()["id"]
+
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/start",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+
+    data = response.json()
+
+    assert data["id"] == session_id
+    assert data["status"] == "IN_PROGRESS"
+    assert data["actual_start_time"] is not None
+    assert data["actual_end_time"] is None
+    assert data["duration_minutes"] is None
+
+
+def test_start_session_records_actual_start_time():
+    """
+    Starting a session records an actual start timestamp.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    class_division = get_first_class_division(token)
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+        json={
+            "class_division_id": class_division["id"],
+            "session_date": "2026-09-25",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    session_id = create_response.json()["id"]
+
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/start",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200
+
+    actual_start_time = response.json()["actual_start_time"]
+
+    parsed = datetime.fromisoformat(
+        actual_start_time.replace("Z", "+00:00")
+    )
+
+    assert parsed.tzinfo is not None
+
+
+
+def test_cannot_start_already_started_session():
+    """
+    An IN_PROGRESS session cannot be started again.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    class_division = get_first_class_division(token)
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+        json={
+            "class_division_id": class_division["id"],
+            "session_date": "2026-09-25",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    session_id = create_response.json()["id"]
+
+    first_response = client.post(
+        f"/api/v1/sessions/{session_id}/start",
+        headers=auth_headers(token),
+    )
+
+    assert first_response.status_code == 200
+
+    second_response = client.post(
+        f"/api/v1/sessions/{session_id}/start",
+        headers=auth_headers(token),
+    )
+
+    assert second_response.status_code == 409
+
+    assert second_response.json()["detail"] == (
+        "Only planned teaching sessions can be started."
+    )
+
+
+
+def test_para_teacher_cannot_start_session_from_another_school():
+    """
+    PT001 cannot start a session belonging to PT002's school.
+    """
+
+    pt001_token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    pt002_token = login(
+        PARA_TEACHERS["PT002"]["email"]
+    )
+
+    pt002_division = get_first_class_division(
+        pt002_token
+    )
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(pt002_token),
+        json={
+            "class_division_id": pt002_division["id"],
+            "session_date": "2026-09-25",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    session_id = create_response.json()["id"]
+
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/start",
+        headers=auth_headers(pt001_token),
+    )
+
+    assert response.status_code == 403
+
+    assert response.json()["detail"] == (
+        "You are not authorized to access this school."
+    )
+
+
+def test_start_nonexistent_session_returns_not_found():
+    """
+    Starting a non-existent session returns 404.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    response = client.post(
+        "/api/v1/sessions/"
+        "00000000-0000-0000-0000-000000000000/start",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 404
+
+    assert response.json()["detail"] == (
+        "Teaching session not found."
+    )
