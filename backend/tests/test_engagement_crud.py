@@ -256,7 +256,10 @@ def test_post_engagement_requires_authentication():
 # ------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("score", [1, 3, 5])
+@pytest.mark.parametrize(
+    "score",
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+)
 def test_valid_engagement_scores_are_accepted(
     score,
 ):
@@ -273,10 +276,26 @@ def test_valid_engagement_scores_are_accepted(
     assert response.json()["score"] == score
 
 
-@pytest.mark.parametrize("score", [0, 6, -1, 10])
+@pytest.mark.parametrize("score", [0, -1, 11, 100])
 def test_invalid_engagement_scores_are_rejected(
     score,
 ):
+    session_id = create_session()
+    start_session(session_id)
+
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/engagement",
+        headers=auth_headers(PT001_EMAIL),
+        json={"score": score},
+    )
+
+    assert response.status_code == 422
+
+@pytest.mark.parametrize(
+    "score",
+    [1.5, 3.5, 5.5, 9.5],
+)
+def test_decimal_engagement_scores_are_rejected(score):
     session_id = create_session()
     start_session(session_id)
 

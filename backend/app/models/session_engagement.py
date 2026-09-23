@@ -65,7 +65,7 @@ class SessionEngagement(Base):
             name="uq_session_engagement_teaching_session",
         ),
         CheckConstraint(
-            "score >= 1 AND score <= 5",
+            "score >= 1 AND score <= 10",
             name="ck_session_engagement_score",
         ),
         CheckConstraint(
