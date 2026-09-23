@@ -6,6 +6,7 @@ from app.models.student import Student
 from app.models.user import User, UserAssignment, UserRole
 from app.models.teaching_session import TeachingSession
 from app.models.session_attendance import SessionAttendance
+from app.models.session_engagement import SessionEngagement
 
 __all__ = [
     "User",
@@ -20,4 +21,5 @@ __all__ = [
     "AuthSession",
     "TeachingSession",
     "SessionAttendance",
+    "SessionEngagement",
 ]

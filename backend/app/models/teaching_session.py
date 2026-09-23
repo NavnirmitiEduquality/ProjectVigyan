@@ -158,3 +158,9 @@ class TeachingSession(Base):
         "SessionAttendance",
         back_populates="teaching_session",
     )
+
+    engagement = relationship(
+        "SessionEngagement",
+        back_populates="teaching_session",
+        uselist=False,
+    )

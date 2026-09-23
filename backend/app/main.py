@@ -6,6 +6,7 @@ from app.routers.class_divisions import router as class_divisions_router
 from app.routers.students import router as students_router
 from app.routers.teaching_sessions import router as teaching_sessions_router
 from app.routers.attendance import router as attendance_router
+from app.routers.engagement import router as engagement_router
 
 app = FastAPI(
     title="Project Vigyan API",
@@ -18,6 +19,7 @@ app.include_router(class_divisions_router)
 app.include_router(students_router)
 app.include_router(teaching_sessions_router)
 app.include_router(attendance_router)
+app.include_router(engagement_router)
 
 @app.get("/")
 def root():

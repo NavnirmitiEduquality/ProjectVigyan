@@ -426,7 +426,6 @@ def test_para_teacher_can_list_sessions_from_assigned_school():
     A Para-Teacher can list sessions belonging to their
     assigned school.
     """
-
     token = login(
         PARA_TEACHERS["PT001"]["email"]
     )
@@ -455,12 +454,25 @@ def test_para_teacher_can_list_sessions_from_assigned_school():
 
     assert sessions
 
-    assert all(
-        session["class_division_id"]
-        == class_division["id"]
-        for session in sessions
+    authorized_divisions_response = client.get(
+        "/api/v1/class-divisions",
+        headers=auth_headers(token),
     )
 
+    assert authorized_divisions_response.status_code == 200
+
+    authorized_division_ids = {
+        division["id"]
+        for division in authorized_divisions_response.json()
+    }
+
+    assert authorized_division_ids
+
+    assert all(
+        session["class_division_id"]
+        in authorized_division_ids
+        for session in sessions
+    )
 
 def test_para_teacher_cannot_list_another_school_sessions():
     """
