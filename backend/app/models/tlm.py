@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import CheckConstraint, DateTime, String, Uuid, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
@@ -58,4 +58,9 @@ class TLM(Base):
             "data_origin IN ('PRODUCTION', 'DEMO', 'TEST')",
             name="ck_tlm_data_origin",
         ),
+    )
+
+    session_tlms = relationship(
+        "SessionTLM",
+        back_populates="tlm",
     )

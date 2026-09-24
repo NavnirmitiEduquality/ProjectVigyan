@@ -12,7 +12,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
@@ -133,4 +133,10 @@ class Photo(Base):
             "data_origin IN ('PRODUCTION', 'DEMO', 'TEST')",
             name="ck_photo_data_origin",
         ),
+    )
+
+    session_tlm = relationship(
+        "SessionTLM",
+        back_populates="photo",
+        uselist=False,
     )
