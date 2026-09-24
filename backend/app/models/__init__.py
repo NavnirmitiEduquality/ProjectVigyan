@@ -8,6 +8,7 @@ from app.models.teaching_session import TeachingSession
 from app.models.session_attendance import SessionAttendance
 from app.models.session_engagement import SessionEngagement
 from app.models.tlm import TLM
+from app.models.photo import Photo
 
 __all__ = [
     "User",
@@ -24,4 +25,5 @@ __all__ = [
     "SessionAttendance",
     "SessionEngagement",
     "TLM",
+    "Photo",
 ]
