@@ -24,42 +24,38 @@ from app.dependencies import (
     require_permission,
     require_school_access,
 )
-from app.models import SessionTLM, TeachingSession, User
+from app.models import (
+    Photo,
+    SessionEvidence,
+    TeachingSession,
+    User,
+)
 from app.services.photo.processing import PhotoProcessingService
 from app.services.photo.service import PhotoService
 from app.services.photo.storage.local import LocalPrivatePhotoStorage
-from app.services.session_tlm.service import (
-    DuplicateTLMError,
-    InactiveTLMError,
-    InvalidQuantityError,
-    InvalidTLMPhotoError,
-    NAConflictError,
+from app.services.session_evidence.service import (
+    DuplicateSessionEvidenceError,
     PhotoInput,
+    PhotoNotFoundError,
+    SessionEvidenceNotFoundError,
+    SessionEvidenceService,
     SessionNotEditableError,
-    SessionTLMIntegrityError,
-    SessionTLMNotFoundError,
-    SessionTLMService,
     TeachingSessionNotFoundError,
-    TLMNotFoundError,
 )
 
 
 router = APIRouter(
     prefix="/api/v1/sessions",
-    tags=["Session TLM"],
+    tags=["Session Evidence"],
 )
 
 
-class SessionTLMResponse(BaseModel):
+class SessionEvidenceResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
     teaching_session_id: UUID
-    tlm_id: UUID
-    tlm_name: str
-    quantity: int
-    usage: str | None
-    photo_id: UUID | None
+    photo_id: UUID
     data_origin: Literal[
         "PRODUCTION",
         "DEMO",
@@ -69,18 +65,11 @@ class SessionTLMResponse(BaseModel):
     updated_at: datetime
 
 
-class SessionTLMListResponse(BaseModel):
-    items: list[SessionTLMResponse]
-    total: int
-
-
 def _get_photo_service() -> PhotoService:
     """
     Construct the application PhotoService.
 
     V1 uses private local filesystem storage.
-    The storage location can later be replaced by object storage
-    without changing SessionTLM business logic.
     """
 
     processing_service = PhotoProcessingService()
@@ -114,7 +103,7 @@ def _get_session(
         .first()
     )
 
-    if not teaching_session:
+    if teaching_session is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Teaching session not found.",
@@ -130,14 +119,15 @@ def _get_session(
 
     return teaching_session
 
-def _get_session_tlm(
+
+def _get_session_evidence(
     session_id: UUID,
-    session_tlm_id: UUID,
+    evidence_id: UUID,
     current_user: User,
     db: Session,
-) -> tuple[TeachingSession, SessionTLM]:
+) -> tuple[TeachingSession, SessionEvidence]:
     """
-    Get a SessionTLM belonging specifically to the
+    Get evidence belonging specifically to the
     teaching session in the URL.
     """
 
@@ -147,45 +137,35 @@ def _get_session_tlm(
         db=db,
     )
 
-    session_tlm = (
-        db.query(SessionTLM)
+    evidence = (
+        db.query(SessionEvidence)
         .filter(
-            SessionTLM.id == session_tlm_id,
-            SessionTLM.teaching_session_id
+            SessionEvidence.id == evidence_id,
+            SessionEvidence.teaching_session_id
             == teaching_session.id,
         )
         .first()
     )
 
-    if not session_tlm:
+    if evidence is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Session TLM not found.",
+            detail="Session evidence not found.",
         )
 
-    return teaching_session, session_tlm
+    return teaching_session, evidence
 
 
-def _serialize_session_tlm(
-    session_tlm: SessionTLM,
-) -> SessionTLMResponse:
-    """
-    Build the API representation from the database model.
-
-    tlm_name comes from the TLM master relationship.
-    """
-
-    return SessionTLMResponse(
-        id=session_tlm.id,
-        teaching_session_id=session_tlm.teaching_session_id,
-        tlm_id=session_tlm.tlm_id,
-        tlm_name=session_tlm.tlm.name,
-        quantity=session_tlm.quantity,
-        usage=session_tlm.usage,
-        photo_id=session_tlm.photo_id,
-        data_origin=session_tlm.data_origin,
-        created_at=session_tlm.created_at,
-        updated_at=session_tlm.updated_at,
+def _serialize_session_evidence(
+    evidence: SessionEvidence,
+) -> SessionEvidenceResponse:
+    return SessionEvidenceResponse(
+        id=evidence.id,
+        teaching_session_id=evidence.teaching_session_id,
+        photo_id=evidence.photo_id,
+        data_origin=evidence.data_origin,
+        created_at=evidence.created_at,
+        updated_at=evidence.updated_at,
     )
 
 
@@ -195,53 +175,35 @@ def _build_photo_input(
     captured_at: datetime | None,
     latitude: Decimal | None,
     longitude: Decimal | None,
-) -> PhotoInput | None:
+) -> PhotoInput:
     """
-    Convert multipart photo fields into the service-layer
-    PhotoInput object.
+    Convert multipart photo fields into PhotoInput.
+
+    Session evidence always requires a photo.
     """
 
     if photo is None:
-        if (
-            captured_at is not None
-            or latitude is not None
-            or longitude is not None
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "captured_at, latitude and longitude "
-                    "can only be provided with a photo."
-                ),
-            )
-
-        return None
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A session evidence photo is required.",
+        )
 
     if captured_at is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "captured_at is required when a photo "
-                "is provided."
-            ),
+            detail="captured_at is required.",
         )
 
     if latitude is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "latitude is required when a photo "
-                "is provided."
-            ),
+            detail="latitude is required.",
         )
 
     if longitude is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "longitude is required when a photo "
-                "is provided."
-            ),
+            detail="longitude is required.",
         )
 
     if photo.content_type not in {
@@ -273,16 +235,13 @@ def _build_photo_input(
 def _raise_service_http_error(
     exc: Exception,
 ) -> None:
-    """
-    Convert known service-layer exceptions to HTTP errors.
-    """
 
     if isinstance(
         exc,
         (
-            SessionTLMNotFoundError,
             TeachingSessionNotFoundError,
-            TLMNotFoundError,
+            SessionEvidenceNotFoundError,
+            PhotoNotFoundError,
         ),
     ):
         raise HTTPException(
@@ -293,23 +252,8 @@ def _raise_service_http_error(
     if isinstance(
         exc,
         (
-            InvalidQuantityError,
-            InvalidTLMPhotoError,
-        ),
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
-
-    if isinstance(
-        exc,
-        (
             SessionNotEditableError,
-            InactiveTLMError,
-            DuplicateTLMError,
-            NAConflictError,
-            SessionTLMIntegrityError,
+            DuplicateSessionEvidenceError,
         ),
     ):
         raise HTTPException(
@@ -322,12 +266,12 @@ def _raise_service_http_error(
 
 def _compensate_failed_transaction(
     db: Session,
-    service: SessionTLMService,
+    service: SessionEvidenceService,
     operation,
 ) -> None:
     """
-    Roll back the database transaction and remove any newly-created
-    physical photo objects.
+    Roll back the database transaction and remove any
+    newly-created physical photo objects.
     """
 
     db.rollback()
@@ -339,105 +283,20 @@ def _compensate_failed_transaction(
 
 
 # ------------------------------------------------------------------
-# LIST
+# GET
 # ------------------------------------------------------------------
 
 @router.get(
-    "/{session_id}/tlms",
-    response_model=SessionTLMListResponse,
+    "/{session_id}/evidence",
+    response_model=SessionEvidenceResponse,
 )
-def list_session_tlms(
+def get_session_evidence(
     session_id: UUID,
     current_user: User = Depends(
-        require_permission("session_tlm.view"),
+        require_permission("session_evidence.view"),
     ),
     db: Session = Depends(get_db),
-) -> SessionTLMListResponse:
-    """
-    List all TLM records belonging to a teaching session.
-    """
-
-    teaching_session = _get_session(
-        session_id=session_id,
-        current_user=current_user,
-        db=db,
-    )
-
-    session_tlms = (
-        db.query(SessionTLM)
-        .filter(
-            SessionTLM.teaching_session_id
-            == teaching_session.id,
-        )
-        .order_by(SessionTLM.created_at.asc())
-        .all()
-    )
-
-    return SessionTLMListResponse(
-        items=[
-            _serialize_session_tlm(session_tlm)
-            for session_tlm in session_tlms
-        ],
-        total=len(session_tlms),
-    )
-
-
-# ------------------------------------------------------------------
-# GET ONE
-# ------------------------------------------------------------------
-
-@router.get(
-    "/{session_id}/tlms/{session_tlm_id}",
-    response_model=SessionTLMResponse,
-)
-def get_session_tlm(
-    session_id: UUID,
-    session_tlm_id: UUID,
-    current_user: User = Depends(
-        require_permission("session_tlm.view"),
-    ),
-    db: Session = Depends(get_db),
-) -> SessionTLMResponse:
-    """
-    Get one SessionTLM record.
-    """
-
-    _, session_tlm = _get_session_tlm(
-        session_id=session_id,
-        session_tlm_id=session_tlm_id,
-        current_user=current_user,
-        db=db,
-    )
-
-    return _serialize_session_tlm(session_tlm)
-
-
-# ------------------------------------------------------------------
-# CREATE
-# ------------------------------------------------------------------
-
-@router.post(
-    "/{session_id}/tlms",
-    response_model=SessionTLMResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def create_session_tlm(
-    session_id: UUID,
-    tlm_id: UUID = Form(...),
-    quantity: int = Form(...),
-    usage: str | None = Form(None),
-    photo: UploadFile | None = File(None),
-    captured_at: datetime | None = Form(None),
-    latitude: Decimal | None = Form(None),
-    longitude: Decimal | None = Form(None),
-    current_user: User = Depends(
-        require_permission("session_tlm.create"),
-    ),
-    db: Session = Depends(get_db),
-) -> SessionTLMResponse:
-    """
-    Add TLM usage to an in-progress teaching session.
-    """
+) -> SessionEvidenceResponse:
 
     _get_session(
         session_id=session_id,
@@ -445,8 +304,78 @@ def create_session_tlm(
         db=db,
     )
 
-    usage = usage.strip() if usage else None
-    usage = usage or None
+    service = SessionEvidenceService(
+        photo_service=_get_photo_service(),
+    )
+
+    try:
+        evidence = service.get(
+            db=db,
+            teaching_session_id=session_id,
+        )
+
+    except (
+        TeachingSessionNotFoundError,
+        SessionEvidenceNotFoundError,
+    ) as exc:
+        _raise_service_http_error(exc)
+
+    return _serialize_session_evidence(evidence)
+
+
+# ------------------------------------------------------------------
+# GET ONE
+# ------------------------------------------------------------------
+
+@router.get(
+    "/{session_id}/evidence/{evidence_id}",
+    response_model=SessionEvidenceResponse,
+)
+def get_session_evidence_by_id(
+    session_id: UUID,
+    evidence_id: UUID,
+    current_user: User = Depends(
+        require_permission("session_evidence.view"),
+    ),
+    db: Session = Depends(get_db),
+) -> SessionEvidenceResponse:
+
+    _, evidence = _get_session_evidence(
+        session_id=session_id,
+        evidence_id=evidence_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    return _serialize_session_evidence(evidence)
+
+
+# ------------------------------------------------------------------
+# CREATE
+# ------------------------------------------------------------------
+
+@router.post(
+    "/{session_id}/evidence",
+    response_model=SessionEvidenceResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_session_evidence(
+    session_id: UUID,
+    photo: UploadFile | None = File(None),
+    captured_at: datetime | None = Form(None),
+    latitude: Decimal | None = Form(None),
+    longitude: Decimal | None = Form(None),
+    current_user: User = Depends(
+        require_permission("session_evidence.create"),
+    ),
+    db: Session = Depends(get_db),
+) -> SessionEvidenceResponse:
+
+    _get_session(
+        session_id=session_id,
+        current_user=current_user,
+        db=db,
+    )
 
     photo_input = _build_photo_input(
         photo=photo,
@@ -455,7 +384,7 @@ def create_session_tlm(
         longitude=longitude,
     )
 
-    service = SessionTLMService(
+    service = SessionEvidenceService(
         photo_service=_get_photo_service(),
     )
 
@@ -465,26 +394,18 @@ def create_session_tlm(
         operation = service.create(
             db=db,
             teaching_session_id=session_id,
-            tlm_id=tlm_id,
-            quantity=quantity,
-            usage=usage,
             photo=photo_input,
         )
 
         db.commit()
-        db.refresh(operation.session_tlm)
+        db.refresh(operation.session_evidence)
 
     except (
-        SessionTLMNotFoundError,
         TeachingSessionNotFoundError,
-        TLMNotFoundError,
-        InvalidQuantityError,
-        InvalidTLMPhotoError,
+        SessionEvidenceNotFoundError,
+        PhotoNotFoundError,
         SessionNotEditableError,
-        InactiveTLMError,
-        DuplicateTLMError,
-        NAConflictError,
-        SessionTLMIntegrityError,
+        DuplicateSessionEvidenceError,
     ) as exc:
         _compensate_failed_transaction(
             db,
@@ -502,7 +423,7 @@ def create_session_tlm(
 
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Unable to create Session TLM.",
+            detail="Unable to create session evidence.",
         ) from exc
 
     except Exception:
@@ -513,57 +434,36 @@ def create_session_tlm(
         )
         raise
 
-    return _serialize_session_tlm(
-        operation.session_tlm,
+    return _serialize_session_evidence(
+        operation.session_evidence,
     )
 
 
 # ------------------------------------------------------------------
-# UPDATE
+# UPDATE / RETAKE
 # ------------------------------------------------------------------
 
 @router.patch(
-    "/{session_id}/tlms/{session_tlm_id}",
-    response_model=SessionTLMResponse,
+    "/{session_id}/evidence",
+    response_model=SessionEvidenceResponse,
 )
-def update_session_tlm(
+def replace_session_evidence(
     session_id: UUID,
-    session_tlm_id: UUID,
-    tlm_id: UUID | None = Form(None),
-    quantity: int | None = Form(None),
-    usage: str | None = Form(None),
     photo: UploadFile | None = File(None),
-    remove_photo: bool = Form(False),
     captured_at: datetime | None = Form(None),
     latitude: Decimal | None = Form(None),
     longitude: Decimal | None = Form(None),
     current_user: User = Depends(
-        require_permission("session_tlm.update"),
+        require_permission("session_evidence.update"),
     ),
     db: Session = Depends(get_db),
-) -> SessionTLMResponse:
-    """
-    Update TLM usage while the session is editable.
-    """
+) -> SessionEvidenceResponse:
 
-    _get_session_tlm(
+    _get_session(
         session_id=session_id,
-        session_tlm_id=session_tlm_id,
         current_user=current_user,
         db=db,
     )
-
-    if photo is not None and remove_photo:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "photo and remove_photo cannot be "
-                "provided together."
-            ),
-        )
-
-    usage = usage.strip() if usage is not None else None
-    usage = usage or None
 
     photo_input = _build_photo_input(
         photo=photo,
@@ -572,37 +472,27 @@ def update_session_tlm(
         longitude=longitude,
     )
 
-    service = SessionTLMService(
+    service = SessionEvidenceService(
         photo_service=_get_photo_service(),
     )
 
     operation = None
 
     try:
-        operation = service.update(
+        operation = service.replace(
             db=db,
-            session_tlm_id=session_tlm_id,
-            tlm_id=tlm_id,
-            quantity=quantity,
-            usage=usage,
+            teaching_session_id=session_id,
             photo=photo_input,
-            remove_photo=remove_photo,
         )
 
         db.commit()
-        db.refresh(operation.session_tlm)
+        db.refresh(operation.session_evidence)
 
     except (
-        SessionTLMNotFoundError,
         TeachingSessionNotFoundError,
-        TLMNotFoundError,
-        InvalidQuantityError,
-        InvalidTLMPhotoError,
+        SessionEvidenceNotFoundError,
+        PhotoNotFoundError,
         SessionNotEditableError,
-        InactiveTLMError,
-        DuplicateTLMError,
-        NAConflictError,
-        SessionTLMIntegrityError,
     ) as exc:
         _compensate_failed_transaction(
             db,
@@ -620,7 +510,7 @@ def update_session_tlm(
 
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Unable to update Session TLM.",
+            detail="Unable to replace session evidence.",
         ) from exc
 
     except Exception:
@@ -631,14 +521,14 @@ def update_session_tlm(
         )
         raise
 
-    # Physical deletion happens only after the database commit.
+    # Delete the old physical photo only after successful commit.
     if operation.obsolete_storage_keys:
-        service.cleanup_storage(
+        service.delete_obsolete_storage(
             operation.obsolete_storage_keys,
         )
 
-    return _serialize_session_tlm(
-        operation.session_tlm,
+    return _serialize_session_evidence(
+        operation.session_evidence,
     )
 
 
@@ -647,29 +537,23 @@ def update_session_tlm(
 # ------------------------------------------------------------------
 
 @router.delete(
-    "/{session_id}/tlms/{session_tlm_id}",
+    "/{session_id}/evidence",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-def delete_session_tlm(
+def delete_session_evidence(
     session_id: UUID,
-    session_tlm_id: UUID,
     current_user: User = Depends(
-        require_permission("session_tlm.delete"),
+        require_permission("session_evidence.delete"),
     ),
     db: Session = Depends(get_db),
 ):
-    """
-    Delete TLM usage from an editable teaching session.
-    """
-
-    _get_session_tlm(
+    _get_session(
         session_id=session_id,
-        session_tlm_id=session_tlm_id,
         current_user=current_user,
         db=db,
     )
 
-    service = SessionTLMService(
+    service = SessionEvidenceService(
         photo_service=_get_photo_service(),
     )
 
@@ -678,17 +562,16 @@ def delete_session_tlm(
     try:
         operation = service.delete(
             db=db,
-            session_tlm_id=session_tlm_id,
+            teaching_session_id=session_id,
         )
 
         db.commit()
 
     except (
-        SessionTLMNotFoundError,
         TeachingSessionNotFoundError,
+        SessionEvidenceNotFoundError,
         SessionNotEditableError,
-        InvalidTLMPhotoError,
-        SessionTLMIntegrityError,
+        PhotoNotFoundError,
     ) as exc:
         db.rollback()
         _raise_service_http_error(exc)
@@ -698,7 +581,7 @@ def delete_session_tlm(
 
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Unable to delete Session TLM.",
+            detail="Unable to delete session evidence.",
         ) from exc
 
     except Exception:
@@ -707,7 +590,7 @@ def delete_session_tlm(
 
     # Delete physical storage only after successful DB commit.
     if operation.obsolete_storage_keys:
-        service.cleanup_storage(
+        service.delete_obsolete_storage(
             operation.obsolete_storage_keys,
         )
 

@@ -140,3 +140,9 @@ class Photo(Base):
         back_populates="photo",
         uselist=False,
     )
+
+    session_evidence = relationship(
+        "SessionEvidence",
+        back_populates="photo",
+        uselist=False,
+    )

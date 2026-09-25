@@ -169,3 +169,9 @@ class TeachingSession(Base):
         "SessionTLM",
         back_populates="teaching_session",
     )
+
+    session_evidence = relationship(
+        "SessionEvidence",
+        back_populates="teaching_session",
+        uselist=False,
+    )
