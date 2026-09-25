@@ -1311,3 +1311,355 @@ def test_complete_nonexistent_session_returns_not_found():
     assert response.json()["detail"] == (
         "Teaching session not found."
     )
+
+def test_submit_teaching_session_feedback():
+    """
+    A Para-Teacher can submit feedback for an in-progress session.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    class_division = get_first_class_division(token)
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+        json={
+            "class_division_id": class_division["id"],
+            "session_date": "2026-09-25",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    session_id = create_response.json()["id"]
+
+    start_response = client.post(
+        f"/api/v1/sessions/{session_id}/start",
+        headers=auth_headers(token),
+    )
+
+    assert start_response.status_code == 200
+
+    response = client.patch(
+        f"/api/v1/sessions/{session_id}/feedback",
+        headers=auth_headers(token),
+        json={
+            "remarks": "Students participated well.",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+
+    data = response.json()
+
+    assert data["id"] == session_id
+    assert data["remarks"] == "Students participated well."
+    assert data["feedback_submitted"] is True
+    assert data["submitted_at"] is not None
+    assert data["status"] == "IN_PROGRESS"
+
+
+def test_submit_feedback_trims_remarks():
+    """
+    Feedback remarks are trimmed before being stored.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    class_division = get_first_class_division(token)
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+        json={
+            "class_division_id": class_division["id"],
+            "session_date": "2026-09-25",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    session_id = create_response.json()["id"]
+
+    start_response = client.post(
+        f"/api/v1/sessions/{session_id}/start",
+        headers=auth_headers(token),
+    )
+
+    assert start_response.status_code == 200
+
+    response = client.patch(
+        f"/api/v1/sessions/{session_id}/feedback",
+        headers=auth_headers(token),
+        json={
+            "remarks": "   Session went well.   ",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["remarks"] == "Session went well."
+
+
+def test_feedback_submission_records_server_timestamp():
+    """
+    Feedback submission records a server-generated timestamp.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    class_division = get_first_class_division(token)
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+        json={
+            "class_division_id": class_division["id"],
+            "session_date": "2026-09-25",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    session_id = create_response.json()["id"]
+
+    start_response = client.post(
+        f"/api/v1/sessions/{session_id}/start",
+        headers=auth_headers(token),
+    )
+
+    assert start_response.status_code == 200
+
+    response = client.patch(
+        f"/api/v1/sessions/{session_id}/feedback",
+        headers=auth_headers(token),
+        json={
+            "remarks": "Session completed successfully.",
+        },
+    )
+
+    assert response.status_code == 200
+
+    submitted_at = response.json()["submitted_at"]
+
+    parsed = datetime.fromisoformat(
+        submitted_at.replace("Z", "+00:00")
+    )
+
+    assert parsed.tzinfo is not None
+
+
+def test_cannot_submit_feedback_for_planned_session():
+    """
+    Feedback cannot be submitted before the session is started.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    class_division = get_first_class_division(token)
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+        json={
+            "class_division_id": class_division["id"],
+            "session_date": "2026-09-25",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    session_id = create_response.json()["id"]
+
+    response = client.patch(
+        f"/api/v1/sessions/{session_id}/feedback",
+        headers=auth_headers(token),
+        json={
+            "remarks": "Session feedback.",
+        },
+    )
+
+    assert response.status_code == 409
+
+    assert response.json()["detail"] == (
+        "Feedback can only be submitted for "
+        "an in-progress teaching session."
+    )
+
+
+def test_cannot_submit_feedback_for_completed_session():
+    """
+    Feedback cannot be submitted after the session is completed.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    class_division = get_first_class_division(token)
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+        json={
+            "class_division_id": class_division["id"],
+            "session_date": "2026-09-25",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    session_id = create_response.json()["id"]
+
+    start_response = client.post(
+        f"/api/v1/sessions/{session_id}/start",
+        headers=auth_headers(token),
+    )
+
+    assert start_response.status_code == 200
+
+    complete_response = client.post(
+        f"/api/v1/sessions/{session_id}/complete",
+        headers=auth_headers(token),
+    )
+
+    assert complete_response.status_code == 200
+
+    response = client.patch(
+        f"/api/v1/sessions/{session_id}/feedback",
+        headers=auth_headers(token),
+        json={
+            "remarks": "Too late.",
+        },
+    )
+
+    assert response.status_code == 409
+
+    assert response.json()["detail"] == (
+        "Feedback can only be submitted for "
+        "an in-progress teaching session."
+    )
+
+
+def test_submit_feedback_requires_authentication():
+    """
+    Feedback submission requires authentication.
+    """
+
+    response = client.patch(
+        "/api/v1/sessions/"
+        "00000000-0000-0000-0000-000000000000/feedback",
+        json={
+            "remarks": "Session feedback.",
+        },
+    )
+
+    assert response.status_code == 401
+
+
+def test_para_teacher_cannot_submit_feedback_from_another_school():
+    """
+    A Para-Teacher cannot submit feedback for another school's session.
+    """
+
+    pt001_token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    pt002_token = login(
+        PARA_TEACHERS["PT002"]["email"]
+    )
+
+    pt002_division = get_first_class_division(
+        pt002_token
+    )
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(pt002_token),
+        json={
+            "class_division_id": pt002_division["id"],
+            "session_date": "2026-09-25",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    session_id = create_response.json()["id"]
+
+    start_response = client.post(
+        f"/api/v1/sessions/{session_id}/start",
+        headers=auth_headers(pt002_token),
+    )
+
+    assert start_response.status_code == 200
+
+    response = client.patch(
+        f"/api/v1/sessions/{session_id}/feedback",
+        headers=auth_headers(pt001_token),
+        json={
+            "remarks": "Unauthorized feedback.",
+        },
+    )
+
+    assert response.status_code == 403
+
+    assert response.json()["detail"] == (
+        "You are not authorized to access this school."
+    )
+
+def test_client_cannot_control_feedback_submission_timestamp():
+    """
+    submitted_at is generated by the server and cannot be supplied
+    by the client.
+    """
+
+    token = login(
+        PARA_TEACHERS["PT001"]["email"]
+    )
+
+    class_division = get_first_class_division(token)
+
+    create_response = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers(token),
+        json={
+            "class_division_id": class_division["id"],
+            "session_date": "2026-09-25",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    session_id = create_response.json()["id"]
+
+    start_response = client.post(
+        f"/api/v1/sessions/{session_id}/start",
+        headers=auth_headers(token),
+    )
+
+    assert start_response.status_code == 200
+
+    response = client.patch(
+        f"/api/v1/sessions/{session_id}/feedback",
+        headers=auth_headers(token),
+        json={
+            "remarks": "Session feedback.",
+            "submitted_at": "2000-01-01T00:00:00Z",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+
+    data = response.json()
+
+    assert data["submitted_at"] != "2000-01-01T00:00:00Z"
+    assert data["submitted_at"] is not None

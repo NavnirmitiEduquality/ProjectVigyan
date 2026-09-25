@@ -99,6 +99,24 @@ class TeachingSessionCreate(BaseModel):
 
         return self
 
+class TeachingSessionFeedback(BaseModel):
+    remarks: str | None = Field(
+        default=None,
+        max_length=2000,
+    )
+
+    @field_validator("remarks")
+    @classmethod
+    def validate_remarks(
+        cls,
+        value: str | None,
+    ) -> str | None:
+        if value is None:
+            return None
+
+        value = value.strip()
+
+        return value or None
 
 @router.get(
     "",
@@ -287,6 +305,76 @@ def start_teaching_session(
 
     return teaching_session
 
+@router.patch(
+    "/{session_id}/feedback",
+    response_model=TeachingSessionResponse,
+)
+def submit_teaching_session_feedback(
+    session_id: UUID,
+    payload: TeachingSessionFeedback,
+    current_user: User = Depends(
+        require_permission("session.update")
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    Submit the feedback/remarks for an in-progress
+    teaching session.
+
+    The server records the submission timestamp.
+    """
+
+    teaching_session = (
+        db.query(TeachingSession)
+        .join(
+            ClassDivision,
+            TeachingSession.class_division_id
+            == ClassDivision.id,
+        )
+        .filter(
+            TeachingSession.id == session_id
+        )
+        .first()
+    )
+
+    if not teaching_session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Teaching session not found.",
+        )
+
+    require_school_access(
+        teaching_session.class_division.school_id,
+        current_user,
+        db,
+    )
+
+    if teaching_session.status != "IN_PROGRESS":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Feedback can only be submitted for "
+                "an in-progress teaching session."
+            ),
+        )
+
+    teaching_session.remarks = payload.remarks
+    teaching_session.feedback_submitted = True
+    teaching_session.submitted_at = datetime.now(timezone.utc)
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Unable to submit teaching session feedback.",
+        )
+
+    db.refresh(teaching_session)
+
+    return teaching_session
 
 @router.post(
     "/{session_id}/complete",
