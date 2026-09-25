@@ -1,9 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timezone
+import io
 import os
 
 import pytest
 from app.database import SessionLocal
-from app.models import User
+from app.models import User, Student, TLM
 from dotenv import load_dotenv
 from fastapi.testclient import TestClient
 
@@ -999,6 +1000,164 @@ def test_start_nonexistent_session_returns_not_found():
         "Teaching session not found."
     )
 
+def prepare_session_for_completion(
+    token: str,
+    session_id: str,
+    class_division_id: str,
+) -> None:
+    """
+    Prepare an in-progress session with every prerequisite required
+    by the final completion gate.
+    """
+
+    # --------------------------------------------------------------
+    # Attendance: every active student must have a record.
+    # --------------------------------------------------------------
+    db = SessionLocal()
+
+    try:
+        students = (
+            db.query(Student)
+            .filter(
+                Student.class_division_id == class_division_id,
+                Student.status == "ACTIVE",
+            )
+            .order_by(Student.roll_no)
+            .all()
+        )
+
+        assert students, (
+            "Demo class division must contain active students."
+        )
+
+        student_ids = [str(student.id) for student in students]
+
+        active_tlm = (
+            db.query(TLM)
+            .filter(TLM.is_active.is_(True))
+            .order_by(TLM.name)
+            .first()
+        )
+
+        assert active_tlm is not None, (
+            "Demo database must contain an active TLM."
+        )
+
+        tlm_id = str(active_tlm.id)
+
+    finally:
+        db.close()
+
+    attendance_response = client.post(
+        f"/api/v1/sessions/{session_id}/attendance",
+        headers=auth_headers(token),
+        json={
+            "records": [
+                {
+                    "student_id": student_id,
+                    "status": "PRESENT",
+                }
+                for student_id in student_ids
+            ]
+        },
+    )
+
+    assert attendance_response.status_code == 200, (
+        attendance_response.text
+    )
+
+    # --------------------------------------------------------------
+    # Engagement: valid integer score in the 1-10 range.
+    # --------------------------------------------------------------
+    engagement_response = client.post(
+        f"/api/v1/sessions/{session_id}/engagement",
+        headers=auth_headers(token),
+        json={"score": 8},
+    )
+
+    assert engagement_response.status_code == 200, (
+        engagement_response.text
+    )
+
+    # --------------------------------------------------------------
+    # TLM: one normal active TLM record.
+    # --------------------------------------------------------------
+    tlm_response = client.post(
+        f"/api/v1/sessions/{session_id}/tlms",
+        headers=auth_headers(token),
+        data={
+            "tlm_id": tlm_id,
+            "quantity": "1",
+            "usage": "Used for the activity.",
+        },
+    )
+
+    assert tlm_response.status_code == 201, (
+        tlm_response.text
+    )
+
+    # --------------------------------------------------------------
+    # Session evidence: exactly one valid JPEG evidence photo.
+    # --------------------------------------------------------------
+    from PIL import Image
+
+    buffer = io.BytesIO()
+
+    image = Image.new(
+        "RGB",
+        (100, 100),
+        (255, 255, 255),
+    )
+
+    image.save(
+        buffer,
+        format="JPEG",
+        quality=90,
+    )
+
+    evidence_response = client.post(
+        f"/api/v1/sessions/{session_id}/evidence",
+        headers=auth_headers(token),
+        files={
+            "photo": (
+                "session-evidence.jpg",
+                buffer.getvalue(),
+                "image/jpeg",
+            )
+        },
+        data={
+            "captured_at": datetime.now(
+                timezone.utc
+            ).isoformat(),
+            "latitude": "19.076000",
+            "longitude": "72.877700",
+        },
+    )
+
+    assert evidence_response.status_code == 201, (
+        evidence_response.text
+    )
+
+    # --------------------------------------------------------------
+    # Feedback/submission step must be the final prerequisite.
+    # --------------------------------------------------------------
+    feedback_response = client.patch(
+        f"/api/v1/sessions/{session_id}/feedback",
+        headers=auth_headers(token),
+        json={
+            "remarks": "Session completed successfully.",
+        },
+    )
+
+    assert feedback_response.status_code == 200, (
+        feedback_response.text
+    )
+
+    feedback_data = feedback_response.json()
+
+    assert feedback_data["feedback_submitted"] is True
+    assert feedback_data["submitted_at"] is not None
+
 def test_complete_teaching_session_requires_authentication():
     """
     Completing a teaching session requires authentication.
@@ -1044,6 +1203,11 @@ def test_para_teacher_can_complete_in_progress_session():
 
     assert start_response.status_code == 200
 
+    prepare_session_for_completion(
+        token,
+        session_id,
+        class_division["id"],
+    )
     response = client.post(
         f"/api/v1/sessions/{session_id}/complete",
         headers=auth_headers(token),
@@ -1092,6 +1256,12 @@ def test_complete_session_records_actual_end_time():
 
     assert start_response.status_code == 200
 
+    prepare_session_for_completion(
+        token,
+        session_id,
+        class_division["id"],
+    )
+
     response = client.post(
         f"/api/v1/sessions/{session_id}/complete",
         headers=auth_headers(token),
@@ -1139,6 +1309,12 @@ def test_complete_session_calculates_duration():
     )
 
     assert start_response.status_code == 200
+
+    prepare_session_for_completion(
+        token,
+        session_id,
+        class_division["id"],
+    )
 
     response = client.post(
         f"/api/v1/sessions/{session_id}/complete",
@@ -1221,6 +1397,12 @@ def test_cannot_complete_already_completed_session():
     )
 
     assert start_response.status_code == 200
+
+    prepare_session_for_completion(
+        token,
+        session_id,
+        class_division["id"],
+    )
 
     first_response = client.post(
         f"/api/v1/sessions/{session_id}/complete",
@@ -1525,6 +1707,12 @@ def test_cannot_submit_feedback_for_completed_session():
     )
 
     assert start_response.status_code == 200
+
+    prepare_session_for_completion(
+        token,
+        session_id,
+        class_division["id"],
+    )
 
     complete_response = client.post(
         f"/api/v1/sessions/{session_id}/complete",

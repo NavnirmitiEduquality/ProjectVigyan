@@ -14,6 +14,7 @@ from app.main import app
 from app.models import (
     ClassDivision,
     SessionTLM,
+    Student,
     TeachingSession,
     TLM,
 )
@@ -307,6 +308,119 @@ def photo_form_data():
         "latitude": "19.076000",
         "longitude": "72.877700",
     }
+
+
+def prepare_session_for_completion_without_tlm(
+    session_id: str,
+) -> None:
+    db = SessionLocal()
+
+    try:
+        session = (
+            db.query(TeachingSession)
+            .filter(TeachingSession.id == session_id)
+            .first()
+        )
+
+        assert session is not None
+
+        students = (
+            db.query(Student)
+            .filter(
+                Student.class_division_id == session.class_division_id,
+                Student.status == "ACTIVE",
+            )
+            .order_by(Student.roll_no)
+            .all()
+        )
+
+        assert students, (
+            "Demo class division must contain active students."
+        )
+
+    finally:
+        db.close()
+
+    headers = auth_headers(PT001_EMAIL)
+
+    attendance_response = client.post(
+        f"/api/v1/sessions/{session_id}/attendance",
+        headers=headers,
+        json={
+            "records": [
+                {
+                    "student_id": str(student.id),
+                    "status": "PRESENT",
+                }
+                for student in students
+            ]
+        },
+    )
+
+    assert attendance_response.status_code == 200, (
+        attendance_response.text
+    )
+
+    engagement_response = client.post(
+        f"/api/v1/sessions/{session_id}/engagement",
+        headers=headers,
+        json={"score": 8},
+    )
+
+    assert engagement_response.status_code == 200, (
+        engagement_response.text
+    )
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+
+    image = Image.new(
+        "RGB",
+        (100, 100),
+        (255, 255, 255),
+    )
+
+    image.save(
+        buffer,
+        format="JPEG",
+        quality=90,
+    )
+
+    evidence_response = client.post(
+        f"/api/v1/sessions/{session_id}/evidence",
+        headers=headers,
+        files={
+            "photo": (
+                "session-evidence.jpg",
+                buffer.getvalue(),
+                "image/jpeg",
+            )
+        },
+        data={
+            "captured_at": datetime.now(
+                timezone.utc
+            ).isoformat(),
+            "latitude": "19.076000",
+            "longitude": "72.877700",
+        },
+    )
+
+    assert evidence_response.status_code == 201, (
+        evidence_response.text
+    )
+
+    feedback_response = client.patch(
+        f"/api/v1/sessions/{session_id}/feedback",
+        headers=headers,
+        json={
+            "remarks": "Session completed successfully.",
+        },
+    )
+
+    assert feedback_response.status_code == 200, (
+        feedback_response.text
+    )
 
 
 # ------------------------------------------------------------------
@@ -676,6 +790,8 @@ def test_session_tlm_cannot_be_modified_after_completion():
 
     session_tlm_id = response.json()["id"]
 
+    prepare_session_for_completion_without_tlm(session_id)
+
     complete_session(session_id)
 
     response = client.patch(
@@ -698,6 +814,8 @@ def test_session_tlm_cannot_be_deleted_after_completion():
     assert response.status_code == 201
 
     session_tlm_id = response.json()["id"]
+
+    prepare_session_for_completion_without_tlm(session_id)
 
     complete_session(session_id)
 

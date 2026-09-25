@@ -1,6 +1,7 @@
 import os
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
+import io
 
 import pytest
 from dotenv import load_dotenv
@@ -12,7 +13,9 @@ from app.main import app
 from app.models import (
     ClassDivision,
     SessionEngagement,
+    Student,
     TeachingSession,
+    TLM,
     User,
 )
 
@@ -225,6 +228,139 @@ def get_engagement_from_db(
         db.close()
 
 
+def prepare_session_for_completion_without_engagement(
+    session_id: str,
+    email: str,
+) -> None:
+    db = SessionLocal()
+
+    try:
+        session = (
+            db.query(TeachingSession)
+            .filter(TeachingSession.id == session_id)
+            .first()
+        )
+
+        assert session is not None
+
+        class_division_id = session.class_division_id
+
+        students = (
+            db.query(Student)
+            .filter(
+                Student.class_division_id == class_division_id,
+                Student.status == "ACTIVE",
+            )
+            .order_by(Student.roll_no)
+            .all()
+        )
+
+        assert students, (
+            "Demo class division must contain active students."
+        )
+
+        active_tlm = (
+            db.query(TLM)
+            .filter(TLM.is_active.is_(True))
+            .order_by(TLM.name)
+            .first()
+        )
+
+        assert active_tlm is not None, (
+            "Demo database must contain an active TLM."
+        )
+
+        tlm_id = str(active_tlm.id)
+
+    finally:
+        db.close()
+
+    token = auth_headers(email)
+
+    attendance_response = client.post(
+        f"/api/v1/sessions/{session_id}/attendance",
+        headers=token,
+        json={
+            "records": [
+                {
+                    "student_id": str(student.id),
+                    "status": "PRESENT",
+                }
+                for student in students
+            ]
+        },
+    )
+
+    assert attendance_response.status_code == 200, (
+        attendance_response.text
+    )
+
+    tlm_response = client.post(
+        f"/api/v1/sessions/{session_id}/tlms",
+        headers=token,
+        data={
+            "tlm_id": tlm_id,
+            "quantity": "1",
+            "usage": "Used for the activity.",
+        },
+    )
+
+    assert tlm_response.status_code == 201, (
+        tlm_response.text
+    )
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+
+    image = Image.new(
+        "RGB",
+        (100, 100),
+        (255, 255, 255),
+    )
+
+    image.save(
+        buffer,
+        format="JPEG",
+        quality=90,
+    )
+
+    evidence_response = client.post(
+        f"/api/v1/sessions/{session_id}/evidence",
+        headers=token,
+        files={
+            "photo": (
+                "session-evidence.jpg",
+                buffer.getvalue(),
+                "image/jpeg",
+            )
+        },
+        data={
+            "captured_at": datetime.now(
+                timezone.utc
+            ).isoformat(),
+            "latitude": "19.076000",
+            "longitude": "72.877700",
+        },
+    )
+
+    assert evidence_response.status_code == 201, (
+        evidence_response.text
+    )
+
+    feedback_response = client.patch(
+        f"/api/v1/sessions/{session_id}/feedback",
+        headers=token,
+        json={
+            "remarks": "Session completed successfully.",
+        },
+    )
+
+    assert feedback_response.status_code == 200, (
+        feedback_response.text
+    )
+
+
 # ------------------------------------------------------------------
 # Authentication
 # ------------------------------------------------------------------
@@ -389,6 +525,11 @@ def test_engagement_cannot_be_updated_after_session_completion():
 
     assert create_response.status_code == 200
 
+    prepare_session_for_completion_without_engagement(
+        session_id,
+        PT001_EMAIL,
+    )
+
     complete_session(session_id)
 
     response = client.post(
@@ -404,6 +545,20 @@ def test_engagement_cannot_be_updated_after_session_completion():
 def test_engagement_cannot_be_created_after_session_completion():
     session_id = create_session()
     start_session(session_id)
+
+    engagement_response = client.post(
+            f"/api/v1/sessions/{session_id}/engagement",
+            headers=auth_headers(PT001_EMAIL),
+            json={"score": 8},
+    )
+
+    assert engagement_response.status_code == 200
+
+    prepare_session_for_completion_without_engagement(
+        session_id,
+        PT001_EMAIL,
+    )
+
     complete_session(session_id)
 
     response = client.post(

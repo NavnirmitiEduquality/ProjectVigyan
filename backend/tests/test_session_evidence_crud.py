@@ -13,7 +13,9 @@ from app.main import app
 from app.models import (
     Photo,
     SessionEvidence,
+    Student,
     TeachingSession,
+    TLM,
 )
 
 load_dotenv()
@@ -576,11 +578,114 @@ def test_para_teacher_cannot_delete_session_evidence():
 # ------------------------------------------------------------------
 
 
+def prepare_session_for_completion_without_evidence(
+    session_id: str,
+) -> None:
+    db = SessionLocal()
+
+    try:
+        session = (
+            db.query(TeachingSession)
+            .filter(TeachingSession.id == session_id)
+            .first()
+        )
+
+        assert session is not None
+
+        students = (
+            db.query(Student)
+            .filter(
+                Student.class_division_id == session.class_division_id,
+                Student.status == "ACTIVE",
+            )
+            .order_by(Student.roll_no)
+            .all()
+        )
+
+        assert students, (
+            "Demo class division must contain active students."
+        )
+
+        active_tlm = (
+            db.query(TLM)
+            .filter(TLM.is_active.is_(True))
+            .order_by(TLM.name)
+            .first()
+        )
+
+        assert active_tlm is not None, (
+            "Demo database must contain an active TLM."
+        )
+
+        tlm_id = str(active_tlm.id)
+
+    finally:
+        db.close()
+
+    headers = auth_headers(PT001_EMAIL)
+
+    attendance_response = client.post(
+        f"/api/v1/sessions/{session_id}/attendance",
+        headers=headers,
+        json={
+            "records": [
+                {
+                    "student_id": str(student.id),
+                    "status": "PRESENT",
+                }
+                for student in students
+            ]
+        },
+    )
+
+    assert attendance_response.status_code == 200, (
+        attendance_response.text
+    )
+
+    engagement_response = client.post(
+        f"/api/v1/sessions/{session_id}/engagement",
+        headers=headers,
+        json={"score": 8},
+    )
+
+    assert engagement_response.status_code == 200, (
+        engagement_response.text
+    )
+
+    tlm_response = client.post(
+        f"/api/v1/sessions/{session_id}/tlms",
+        headers=headers,
+        data={
+            "tlm_id": tlm_id,
+            "quantity": "1",
+            "usage": "Used for the activity.",
+        },
+    )
+
+    assert tlm_response.status_code == 201, (
+        tlm_response.text
+    )
+
+    feedback_response = client.patch(
+        f"/api/v1/sessions/{session_id}/feedback",
+        headers=headers,
+        json={
+            "remarks": "Session completed successfully.",
+        },
+    )
+
+    assert feedback_response.status_code == 200, (
+        feedback_response.text
+    )
+
+
 def test_session_evidence_cannot_be_created_after_session_completion():
     session_id = create_in_progress_session()
 
     response = create_session_evidence(session_id)
     assert response.status_code == 201
+
+    prepare_session_for_completion_without_evidence(session_id)
 
     complete_response = client.post(
         f"/api/v1/sessions/{session_id}/complete",
@@ -606,6 +711,8 @@ def test_session_evidence_cannot_be_replaced_after_completion():
 
     response = create_session_evidence(session_id)
     assert response.status_code == 201
+
+    prepare_session_for_completion_without_evidence(session_id)
 
     complete_response = client.post(
         f"/api/v1/sessions/{session_id}/complete",

@@ -18,7 +18,16 @@ from app.dependencies import (
     require_permission,
     require_school_access,
 )
-from app.models import ClassDivision, TeachingSession, User
+from app.models import (
+    ClassDivision,
+    SessionAttendance,
+    SessionEngagement,
+    SessionEvidence,
+    SessionTLM,
+    Student,
+    TeachingSession,
+    User,
+)
 
 
 router = APIRouter(
@@ -388,13 +397,13 @@ def complete_teaching_session(
     db: Session = Depends(get_db),
 ):
     """
-    Complete an in-progress teaching session.
+    Finalize an in-progress teaching session.
 
-    The transition is server-controlled:
-    IN_PROGRESS -> COMPLETED
+    The session can only transition from IN_PROGRESS to COMPLETED
+    after all required session components have been submitted.
 
-    The server records the actual end time and calculates
-    the session duration from the actual start and end times.
+    The server records the actual end time and calculates the
+    session duration from the actual start and end times.
     """
 
     teaching_session = (
@@ -436,6 +445,112 @@ def complete_teaching_session(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 "Teaching session has no actual start time."
+            ),
+        )
+
+    active_student_ids = {
+        student_id
+        for student_id, in db.query(Student.id)
+        .filter(
+            Student.class_division_id
+            == teaching_session.class_division_id,
+            Student.status == "ACTIVE",
+        )
+        .all()
+    }
+
+    attendance_student_ids = {
+        student_id
+        for student_id, in db.query(
+            SessionAttendance.student_id
+        )
+        .filter(
+            SessionAttendance.teaching_session_id
+            == teaching_session.id
+        )
+        .all()
+    }
+
+    if attendance_student_ids != active_student_ids:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Attendance must be submitted for every "
+                "active student before the session can "
+                "be completed."
+            ),
+        )
+
+    engagement_exists = (
+        db.query(SessionEngagement.id)
+        .filter(
+            SessionEngagement.teaching_session_id
+            == teaching_session.id
+        )
+        .first()
+        is not None
+    )
+
+    if not engagement_exists:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Engagement must be recorded before the "
+                "session can be completed."
+            ),
+        )
+
+    tlm_exists = (
+        db.query(SessionTLM.id)
+        .filter(
+            SessionTLM.teaching_session_id
+            == teaching_session.id
+        )
+        .first()
+        is not None
+    )
+
+    if not tlm_exists:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "TLM usage must be recorded before the "
+                "session can be completed."
+            ),
+        )
+
+    evidence_count = (
+        db.query(SessionEvidence.id)
+        .filter(
+            SessionEvidence.teaching_session_id
+            == teaching_session.id
+        )
+        .count()
+    )
+
+    if evidence_count != 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Exactly one session evidence photo is "
+                "required before the session can be completed."
+            ),
+        )
+
+    if not teaching_session.feedback_submitted:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Feedback must be submitted before the "
+                "session can be completed."
+            ),
+        )
+
+    if teaching_session.submitted_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Feedback submission timestamp is missing."
             ),
         )
 

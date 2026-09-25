@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.database import SessionLocal
 from app.main import app
-from app.models import Student
+from app.models import Student, TLM
 
 load_dotenv()
 
@@ -136,6 +136,133 @@ def create_in_progress_session(token: str) -> tuple[str, str]:
     assert start_response.json()["status"] == "IN_PROGRESS"
 
     return session_id, class_division["id"]
+
+
+def prepare_session_for_completion(
+    token: str,
+    session_id: str,
+    class_division_id: str,
+) -> None:
+    students = get_active_students(class_division_id)
+
+    assert students, (
+        "Demo class division must contain active students."
+    )
+
+    attendance_response = client.post(
+        f"/api/v1/sessions/{session_id}/attendance",
+        headers=auth_headers(token),
+        json={
+            "records": [
+                {
+                    "student_id": student["id"],
+                    "status": "PRESENT",
+                }
+                for student in students
+            ]
+        },
+    )
+
+    assert attendance_response.status_code == 200, (
+        attendance_response.text
+    )
+
+    engagement_response = client.post(
+        f"/api/v1/sessions/{session_id}/engagement",
+        headers=auth_headers(token),
+        json={"score": 8},
+    )
+
+    assert engagement_response.status_code == 200, (
+        engagement_response.text
+    )
+
+    db = SessionLocal()
+
+    try:
+        active_tlm = (
+            db.query(TLM)
+            .filter(TLM.is_active.is_(True))
+            .order_by(TLM.name)
+            .first()
+        )
+
+        assert active_tlm is not None, (
+            "Demo database must contain an active TLM."
+        )
+
+        tlm_id = str(active_tlm.id)
+
+    finally:
+        db.close()
+
+    tlm_response = client.post(
+        f"/api/v1/sessions/{session_id}/tlms",
+        headers=auth_headers(token),
+        data={
+            "tlm_id": tlm_id,
+            "quantity": "1",
+            "usage": "Used for the activity.",
+        },
+    )
+
+    assert tlm_response.status_code == 201, (
+        tlm_response.text
+    )
+
+    # Reuse the established evidence-test JPEG pattern.
+    from PIL import Image
+    import io
+    from datetime import datetime, timezone
+
+    buffer = io.BytesIO()
+
+    image = Image.new(
+        "RGB",
+        (100, 100),
+        (255, 255, 255),
+    )
+
+    image.save(
+        buffer,
+        format="JPEG",
+        quality=90,
+    )
+
+    evidence_response = client.post(
+        f"/api/v1/sessions/{session_id}/evidence",
+        headers=auth_headers(token),
+        files={
+            "photo": (
+                "session-evidence.jpg",
+                buffer.getvalue(),
+                "image/jpeg",
+            )
+        },
+        data={
+            "captured_at": datetime.now(
+                timezone.utc
+            ).isoformat(),
+            "latitude": "19.076000",
+            "longitude": "72.877700",
+        },
+    )
+
+    assert evidence_response.status_code == 201, (
+        evidence_response.text
+    )
+
+    feedback_response = client.patch(
+        f"/api/v1/sessions/{session_id}/feedback",
+        headers=auth_headers(token),
+        json={
+            "remarks": "Session completed successfully.",
+        },
+    )
+
+    assert feedback_response.status_code == 200, (
+        feedback_response.text
+    )
 
 
 def test_get_attendance_requires_authentication():
@@ -589,6 +716,12 @@ def test_attendance_rejected_for_completed_session():
 
     session_id, class_division_id = (
         create_in_progress_session(token)
+    )
+
+    prepare_session_for_completion(
+        token,
+        session_id,
+        class_division_id,
     )
 
     complete_response = client.post(
