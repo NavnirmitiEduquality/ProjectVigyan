@@ -110,6 +110,11 @@ class User(Base):
         back_populates="para_teacher",
     )
 
+    session_plan_weeks = relationship(
+        "SessionPlanWeek",
+        back_populates="para_teacher",
+    )
+
 
 class UserRole(Base):
     __tablename__ = "user_roles"

@@ -27,6 +27,16 @@ class TeachingSession(Base):
         default=uuid.uuid4,
     )
 
+    session_plan_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(
+            "session_plan_items.id",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+
     class_division_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey(
             "class_divisions.id",
@@ -174,4 +184,9 @@ class TeachingSession(Base):
         "SessionEvidence",
         back_populates="teaching_session",
         uselist=False,
+    )
+
+    session_plan_item = relationship(
+        "SessionPlanItem",
+        back_populates="teaching_session",
     )

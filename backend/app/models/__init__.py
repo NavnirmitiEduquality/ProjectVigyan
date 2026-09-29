@@ -11,6 +11,9 @@ from app.models.tlm import TLM
 from app.models.photo import Photo
 from app.models.session_tlm import SessionTLM
 from app.models.session_evidence import SessionEvidence
+from app.models.session_plan_week import SessionPlanWeek
+from app.models.session_plan_item import SessionPlanItem
+from app.models.session_plan_content import SessionPlanContent
 
 __all__ = [
     "User",
@@ -30,4 +33,7 @@ __all__ = [
     "Photo",
     "SessionTLM",
     "SessionEvidence",
+    "SessionPlanWeek",
+    "SessionPlanItem",
+    "SessionPlanContent",
 ]
