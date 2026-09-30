@@ -9,6 +9,7 @@ from app.routers.attendance import router as attendance_router
 from app.routers.engagement import router as engagement_router
 from app.routers.session_tlm import router as session_tlm_router
 from app.routers.session_evidence import router as session_evidence_router
+from app.routers.session_plan import router as session_plan_router
 
 app = FastAPI(
     title="Project Vigyan API",
@@ -24,6 +25,7 @@ app.include_router(attendance_router)
 app.include_router(engagement_router)
 app.include_router(session_tlm_router)
 app.include_router(session_evidence_router)
+app.include_router(session_plan_router)
 
 @app.get("/")
 def root():
