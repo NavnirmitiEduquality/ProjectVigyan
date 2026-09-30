@@ -24,6 +24,7 @@ from app.models import (
     SessionPlanContent,
     SessionPlanItem,
     SessionPlanWeek,
+    TeachingSession,
     User,
 )
 from app.services.session_plan.service import (
@@ -95,6 +96,26 @@ class SessionPlanContentResponse(BaseModel):
 class SessionPlanWeekDetailResponse(BaseModel):
     week: SessionPlanWeekResponse
     items: list[SessionPlanItemResponse]
+
+
+class SessionPlanTeachingSessionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    session_plan_item_id: UUID | None
+    class_division_id: UUID
+    para_teacher_id: UUID
+    session_date: date
+    planned_start_time: time | None
+    planned_end_time: time | None
+    actual_start_time: datetime | None
+    actual_end_time: datetime | None
+    duration_minutes: int | None
+    status: str
+    remarks: str | None
+    feedback_submitted: bool
+    submitted_at: datetime | None
+    data_origin: str
 
 
 # ----------------------------------------------------------------------
@@ -770,3 +791,57 @@ def validate_session_plan_item(
         raise
 
     return item
+
+
+# ----------------------------------------------------------------------
+# TEACHING SESSION LINKING
+# ----------------------------------------------------------------------
+
+
+@router.post(
+    "/items/{item_id}/teaching-session",
+    response_model=SessionPlanTeachingSessionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_teaching_session_from_plan(
+    item_id: UUID,
+    current_user: User = Depends(
+        require_permission("session.create")
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    Create a TeachingSession from a validated session-plan item.
+
+    The session-plan item remains the source of the planned
+    class, date, teacher, and planned time values.
+
+    The authenticated para-teacher is used as the session owner.
+    """
+
+    _get_item_with_school_scope(
+        item_id=item_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    service = _service()
+
+    try:
+        teaching_session = service.link_teaching_session(
+            db,
+            para_teacher_id=current_user.id,
+            item_id=item_id,
+        )
+    except Exception as exc:
+        _raise_service_http_error(exc)
+        raise
+
+    _commit_or_conflict(
+        db,
+        "Unable to create teaching session from session plan.",
+    )
+
+    db.refresh(teaching_session)
+
+    return teaching_session

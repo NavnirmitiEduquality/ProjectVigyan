@@ -574,6 +574,35 @@ class SessionPlanService:
 
         return item
 
+    def link_teaching_session(
+        self,
+        db: Session,
+        *,
+        para_teacher_id: UUID,
+        item_id: UUID,
+    ) -> TeachingSession:
+        item = self.ensure_ready_for_teaching_session(
+            db,
+            para_teacher_id=para_teacher_id,
+            item_id=item_id,
+        )
+
+        teaching_session = TeachingSession(
+            session_plan_item_id=item.id,
+            class_division_id=item.class_division_id,
+            para_teacher_id=para_teacher_id,
+            session_date=item.planned_date,
+            planned_start_time=item.planned_start_time,
+            planned_end_time=item.planned_end_time,
+            status="PLANNED",
+            data_origin="PRODUCTION",
+        )
+
+        db.add(teaching_session)
+        db.flush()
+
+        return teaching_session
+
     # ------------------------------------------------------------------
     # INTERNAL LOOKUPS
     # ------------------------------------------------------------------
