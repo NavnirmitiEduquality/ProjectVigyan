@@ -38,3 +38,16 @@ Thumbs.db
 *.sqlite3
 
 storage/
+
+clean_db.py
+fix.py
+inject.py
+
+# Project Documentation Artifacts
+docs/PROJECT_TECHNOLOGY_OVERVIEW.md
+docs/prd.md
+docs/Architecture.md
+docs/Rules.md
+docs/Design.md
+docs/Tasks.md
+docs/Memory.md
