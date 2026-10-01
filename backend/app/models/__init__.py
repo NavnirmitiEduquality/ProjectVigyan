@@ -14,6 +14,8 @@ from app.models.session_evidence import SessionEvidence
 from app.models.session_plan_week import SessionPlanWeek
 from app.models.session_plan_item import SessionPlanItem
 from app.models.session_plan_content import SessionPlanContent
+from app.models.academic_year import AcademicYear
+from app.models.academic_holiday import AcademicHoliday
 
 __all__ = [
     "User",
@@ -36,4 +38,6 @@ __all__ = [
     "SessionPlanWeek",
     "SessionPlanItem",
     "SessionPlanContent",
+    "AcademicYear",
+    "AcademicHoliday"
 ]

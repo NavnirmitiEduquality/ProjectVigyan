@@ -162,11 +162,11 @@ def test_session_plan_content_model_contract():
     assert table.c.session_plan_item_id.nullable is False
     assert table.c.content.nullable is False
 
+    from sqlalchemy.schema import UniqueConstraint
     assert any(
-        index.unique
-        and tuple(column.name for column in index.columns)
-        == ("session_plan_item_id",)
-        for index in table.indexes
+        isinstance(c, UniqueConstraint)
+        and tuple(col.name for col in c.columns) == ("session_plan_item_id",)
+        for c in table.constraints
     )
 
 
@@ -268,4 +268,3 @@ def test_planned_date_is_not_enforced_by_session_plan_item_model():
     )
 
     assert item.planned_date == planned_date
-

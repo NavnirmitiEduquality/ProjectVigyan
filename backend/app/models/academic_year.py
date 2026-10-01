@@ -1,11 +1,12 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
     DateTime,
-    ForeignKey,
     String,
-    Text,
     UniqueConstraint,
     Uuid,
     func,
@@ -15,8 +16,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
 
-class SessionPlanContent(Base):
-    __tablename__ = "session_plan_contents"
+class AcademicYear(Base):
+    __tablename__ = "academic_years"
 
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
@@ -24,18 +25,26 @@ class SessionPlanContent(Base):
         default=uuid.uuid4,
     )
 
-    session_plan_item_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey(
-            "session_plan_items.id",
-            ondelete="RESTRICT",
-        ),
+    name: Mapped[str] = mapped_column(
+        String(50),
         nullable=False,
-        index=True,
     )
 
-    content: Mapped[str] = mapped_column(
-        Text,
+    start_date: Mapped[date] = mapped_column(
+        Date,
         nullable=False,
+    )
+
+    end_date: Mapped[date] = mapped_column(
+        Date,
+        nullable=False,
+    )
+
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default="true",
     )
 
     data_origin: Mapped[str] = mapped_column(
@@ -60,12 +69,21 @@ class SessionPlanContent(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "session_plan_item_id",
-            name="uq_session_plan_content_item",
+            "name",
+            name="uq_academic_year_name",
+        ),
+        CheckConstraint(
+            "start_date < end_date",
+            name="ck_academic_year_date_range",
+        ),
+        CheckConstraint(
+            "data_origin IN ('PRODUCTION', 'DEMO', 'TEST')",
+            name="ck_academic_year_data_origin",
         ),
     )
 
-    session_plan_item = relationship(
-        "SessionPlanItem",
-        back_populates="content",
+    holidays = relationship(
+        "AcademicHoliday",
+        back_populates="academic_year",
+        cascade="all, delete-orphan",
     )

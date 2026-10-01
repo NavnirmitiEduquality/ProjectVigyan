@@ -1,7 +1,10 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     String,
@@ -15,8 +18,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
 
-class SessionPlanContent(Base):
-    __tablename__ = "session_plan_contents"
+class AcademicHoliday(Base):
+    __tablename__ = "academic_holidays"
 
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
@@ -24,18 +27,40 @@ class SessionPlanContent(Base):
         default=uuid.uuid4,
     )
 
-    session_plan_item_id: Mapped[uuid.UUID] = mapped_column(
+    academic_year_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey(
-            "session_plan_items.id",
+            "academic_years.id",
             ondelete="RESTRICT",
         ),
         nullable=False,
         index=True,
     )
 
-    content: Mapped[str] = mapped_column(
-        Text,
+    holiday_date: Mapped[date] = mapped_column(
+        Date,
         nullable=False,
+    )
+
+    name: Mapped[str] = mapped_column(
+        String(150),
+        nullable=False,
+    )
+
+    type: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+    )
+
+    description: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default="true",
     )
 
     data_origin: Mapped[str] = mapped_column(
@@ -60,12 +85,17 @@ class SessionPlanContent(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "session_plan_item_id",
-            name="uq_session_plan_content_item",
+            "academic_year_id",
+            "holiday_date",
+            name="uq_academic_holiday_year_date",
+        ),
+        CheckConstraint(
+            "data_origin IN ('PRODUCTION', 'DEMO', 'TEST')",
+            name="ck_academic_holiday_data_origin",
         ),
     )
 
-    session_plan_item = relationship(
-        "SessionPlanItem",
-        back_populates="content",
+    academic_year = relationship(
+        "AcademicYear",
+        back_populates="holidays",
     )
