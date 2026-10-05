@@ -126,6 +126,7 @@ PERMISSIONS = [
     ("View Assessments", "assessment.view", "assessment"),
     ("Import Assessments", "assessment.import", "assessment"),
     ("Update Assessments", "assessment.update", "assessment"),
+    ("Submit Assessments", "assessment.submit", "assessment"),
 
     # Evidence
     ("View Evidence", "evidence.view", "evidence"),
@@ -203,6 +204,7 @@ ROLE_PERMISSIONS = {
         "assessment.view",
         "assessment.import",
         "assessment.update",
+        "assessment.submit",
         "evidence.view",
         "evidence.download",
         "evidence.approve",
@@ -251,6 +253,7 @@ ROLE_PERMISSIONS = {
         "assessment.view",
         "assessment.import",
         "assessment.update",
+        "assessment.submit",
         "evidence.view",
         "feedback.view",
         "report.view",

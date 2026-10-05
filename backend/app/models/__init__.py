@@ -16,6 +16,12 @@ from app.models.session_plan_item import SessionPlanItem
 from app.models.session_plan_content import SessionPlanContent
 from app.models.academic_year import AcademicYear
 from app.models.academic_holiday import AcademicHoliday
+from app.models.assessment import (
+    Assessment,
+    AssessmentImport,
+    AssessmentImportRow,
+    AssessmentResult,
+)
 
 __all__ = [
     "User",
@@ -39,5 +45,9 @@ __all__ = [
     "SessionPlanItem",
     "SessionPlanContent",
     "AcademicYear",
-    "AcademicHoliday"
+    "AcademicHoliday",
+    "Assessment",
+    "AssessmentImport",
+    "AssessmentImportRow",
+    "AssessmentResult",
 ]

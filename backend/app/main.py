@@ -11,6 +11,7 @@ from app.routers.session_tlm import router as session_tlm_router
 from app.routers.session_evidence import router as session_evidence_router
 from app.routers.session_plan import router as session_plan_router
 from app.routers.academic_calendar import router as academic_calendar_router
+from app.routers.assessment import router as assessment_router
 
 app = FastAPI(
     title="Project Vigyan API",
@@ -28,6 +29,7 @@ app.include_router(session_tlm_router)
 app.include_router(session_evidence_router)
 app.include_router(session_plan_router)
 app.include_router(academic_calendar_router)
+app.include_router(assessment_router)
 
 @app.get("/")
 def root():
