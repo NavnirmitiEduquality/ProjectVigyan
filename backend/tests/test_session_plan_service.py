@@ -503,6 +503,76 @@ def test_plan_item_can_be_edited_before_session_starts(db):
     assert updated.planned_end_time == time(10, 45)
 
 
+def test_rescheduling_linked_planned_session_synchronizes_teaching_session(db):
+    service = SessionPlanService()
+
+    divisions = get_demo_class_divisions(db, 1)
+
+    teacher = create_para_teacher(
+        db,
+        school_id=divisions[0].school_id,
+    )
+
+    week = service.get_or_create_week(
+        db,
+        para_teacher_id=teacher.id,
+        week_start_date=monday(),
+        data_origin="TEST",
+    )
+
+    item = service.create_item(
+        db,
+        para_teacher_id=teacher.id,
+        session_plan_week_id=week.id,
+        class_division_id=divisions[0].id,
+        planned_date=monday(),
+        sequence_no=1,
+        planned_start_time=time(10, 0),
+        planned_end_time=time(10, 45),
+        data_origin="TEST",
+    )
+
+    teaching_session = TeachingSession(
+        class_division_id=item.class_division_id,
+        para_teacher_id=teacher.id,
+        session_plan_item_id=item.id,
+        session_date=item.planned_date,
+        planned_start_time=item.planned_start_time,
+        planned_end_time=item.planned_end_time,
+        status="PLANNED",
+        data_origin="TEST",
+    )
+
+    db.add(teaching_session)
+    db.flush()
+
+    new_division = divisions[0]
+    new_date = monday() + timedelta(days=2)
+    new_start = time(11, 0)
+    new_end = time(11, 45)
+
+    updated = service.update_item(
+        db,
+        para_teacher_id=teacher.id,
+        item_id=item.id,
+        class_division_id=new_division.id,
+        planned_date=new_date,
+        planned_start_time=new_start,
+        planned_end_time=new_end,
+    )
+
+    assert updated.class_division_id == new_division.id
+    assert updated.planned_date == new_date
+    assert updated.planned_start_time == new_start
+    assert updated.planned_end_time == new_end
+
+    assert teaching_session.status == "PLANNED"
+    assert teaching_session.class_division_id == new_division.id
+    assert teaching_session.session_date == new_date
+    assert teaching_session.planned_start_time == new_start
+    assert teaching_session.planned_end_time == new_end
+
+
 def test_plan_item_is_locked_after_teaching_session_starts(db):
     service = SessionPlanService()
 

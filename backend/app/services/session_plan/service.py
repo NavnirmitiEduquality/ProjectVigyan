@@ -312,6 +312,14 @@ class SessionPlanService:
             item,
         )
 
+        teaching_session = (
+            db.query(TeachingSession)
+            .filter(
+                TeachingSession.session_plan_item_id == item.id,
+            )
+            .first()
+        )
+
         week = item.session_plan_week
 
         new_class_division_id = (
@@ -385,6 +393,12 @@ class SessionPlanService:
 
             item.planned_start_time = planned_start_time
             item.planned_end_time = planned_end_time
+
+        if teaching_session is not None and teaching_session.status == "PLANNED":
+            teaching_session.class_division_id = item.class_division_id
+            teaching_session.session_date = item.planned_date
+            teaching_session.planned_start_time = item.planned_start_time
+            teaching_session.planned_end_time = item.planned_end_time
 
         db.flush()
 
