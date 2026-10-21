@@ -123,6 +123,11 @@ def assessment_context():
             db.query(Assessment).filter(
                 Assessment.id.in_(assessment_ids)
             ).delete(synchronize_session=False)
+            db.query(Student).filter(
+                Student.class_division_id == division.id,
+                Student.data_origin == "PRODUCTION",
+                Student.student_code.like("AT-PROD-%"),
+            ).delete(synchronize_session=False)
         db.delete(year)
         db.delete(user)
         db.delete(students[0])
@@ -136,8 +141,15 @@ def assessment_context():
         db.close()
 
 
-def create_assessment(context, assessment_type="BASELINE", sequence_no=None, maximum_marks=20):
-    return AssessmentService(context["db"]).create_assessment(
+def create_assessment(
+    context,
+    assessment_type="BASELINE",
+    sequence_no=None,
+    maximum_marks=20,
+    *,
+    configure_scope=True,
+):
+    assessment = AssessmentService(context["db"]).create_assessment(
         academic_year_id=context["year"].id,
         school_id=context["school"].id,
         assessment_type=assessment_type,
@@ -147,6 +159,33 @@ def create_assessment(context, assessment_type="BASELINE", sequence_no=None, max
         maximum_marks=Decimal(maximum_marks),
         data_origin="TEST",
     )
+    if configure_scope:
+        set_assessment_scope(context, assessment)
+    return assessment
+
+
+def set_assessment_scope(context, assessment):
+    return AssessmentService(context["db"]).set_scope(
+        assessment_id=assessment.id,
+        class_division_ids=[context["division"].id],
+    )
+
+
+def add_production_roster_student(context, *, index=3):
+    student = Student(
+        student_code=(
+            f"AT-PROD-{uuid4().hex[:10]}-{index}"
+        ),
+        full_name=f"Production Roster Student {index}",
+        gender="OTHER",
+        roll_no=index,
+        class_division_id=context["division"].id,
+        status="ACTIVE",
+        data_origin="PRODUCTION",
+    )
+    context["db"].add(student)
+    context["db"].flush()
+    return student
 
 
 @pytest.mark.parametrize("assessment_type", ["BASELINE", "MIDLINE", "ENDLINE"])
@@ -156,12 +195,13 @@ def test_create_valid_assessment_types(assessment_context, assessment_type):
         assessment_type,
         2 if assessment_type == "MIDLINE" else None,
     )
+    set_assessment_scope(assessment_context, assessment)
     assert assessment.assessment_type == assessment_type
     assert assessment.sequence_no == (2 if assessment_type == "MIDLINE" else 1)
 
 
 def test_multiple_midlines_and_duplicate_event_rejection(assessment_context):
-    create_assessment(assessment_context, "MIDLINE", 1)
+    assessment = create_assessment(assessment_context, "MIDLINE", 1)
     create_assessment(assessment_context, "MIDLINE", 2)
     with pytest.raises(AssessmentValidationError):
         create_assessment(assessment_context, "MIDLINE", 1)
@@ -215,6 +255,7 @@ def test_nonexistent_parent_rejected(assessment_context):
 
 def test_import_validation_and_counts(assessment_context):
     assessment = create_assessment(assessment_context)
+    set_assessment_scope(assessment_context, assessment)
     service = AssessmentService(assessment_context["db"])
     imported = service.import_rows(
         assessment_id=assessment.id,
@@ -251,7 +292,7 @@ def test_import_validation_and_counts(assessment_context):
         ],
     )
     assert imported.error_count == 2
-    assert imported.warning_count >= 2
+    assert imported.warning_count == 1
     assert any(row.validation_status == "VALID" for row in imported.rows)
     assert any(row.validation_status == "WARNING" for row in imported.rows)
 
@@ -291,6 +332,10 @@ def test_manual_mapping_and_warning_acknowledgement(assessment_context):
 def test_marks_and_submission_locking(assessment_context):
     assessment = create_assessment(assessment_context, maximum_marks=10)
     service = AssessmentService(assessment_context["db"])
+    production_student = add_production_roster_student(
+        assessment_context
+    )
+    service = AssessmentService(assessment_context["db"])
     imported = service.import_rows(
         assessment_id=assessment.id,
         created_by_user_id=assessment_context["user"].id,
@@ -312,7 +357,10 @@ def test_marks_and_submission_locking(assessment_context):
         service.update_row_marks(import_row_id=row.id, aggregate_marks=Decimal("11"))
 
     with pytest.raises(AssessmentValidationError):
-        service.submit(assessment_id=assessment.id)
+        service.submit(
+            assessment_id=assessment.id,
+            submitted_by_user_id=assessment_context["user"].id,
+        )
     service.acknowledge_warning(
         import_row_id=next(
             item.id for item in imported.rows
@@ -326,9 +374,15 @@ def test_marks_and_submission_locking(assessment_context):
         ("VALID", False, None, True),
         ("WARNING", True, "Student is missing from the import.", False),
     ]
-    submitted = service.submit(assessment_id=assessment.id)
+    submitted = service.submit(
+        assessment_id=assessment.id,
+        submitted_by_user_id=assessment_context["user"].id,
+    )
     assessment_context["db"].commit()
     assert submitted.status == "SUBMITTED"
+    assert submitted.submitted_by_user_id == assessment_context["user"].id
+    assert submitted.submitted_at is not None
+    assert submitted.submitted_at.tzinfo is not None
     assert assessment_context["db"].query(AssessmentResult).filter(
         AssessmentResult.assessment_id == assessment.id
     ).count() == 1
@@ -345,7 +399,10 @@ def test_marks_and_submission_locking(assessment_context):
             }],
         )
     with pytest.raises(AssessmentLockedError):
-        service.submit(assessment_id=assessment.id)
+        service.submit(
+            assessment_id=assessment.id,
+            submitted_by_user_id=assessment_context["user"].id,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +452,9 @@ def test_complete_roster_has_no_missing_student_warnings(assessment_context):
 def test_partial_roster_generates_missing_student_warnings(assessment_context):
     assessment = create_assessment(assessment_context)
     service = AssessmentService(assessment_context["db"])
-
+    production_student = add_production_roster_student(
+        assessment_context
+    )
     imported = service.import_rows(
         assessment_id=assessment.id,
         created_by_user_id=assessment_context["user"].id,
@@ -424,15 +483,17 @@ def test_partial_roster_generates_missing_student_warnings(assessment_context):
     assert missing_row.warning_acknowledged is False
     assert missing_row.is_mapped is False
     assert missing_row.student_id is None
-    assert missing_row.student_business_id == assessment_context["students"][1].student_code
-    assert missing_row.source_student_name == assessment_context["students"][1].full_name
+    assert missing_row.student_business_id == production_student.student_code
+    assert missing_row.source_student_name == production_student.full_name
     assert imported.warning_count == 1
 
 
 def test_unacknowledged_missing_warning_blocks_submission(assessment_context):
     assessment = create_assessment(assessment_context)
     service = AssessmentService(assessment_context["db"])
-
+    production_student = add_production_roster_student(
+        assessment_context
+    )
     imported = service.import_rows(
         assessment_id=assessment.id,
         created_by_user_id=assessment_context["user"].id,
@@ -456,9 +517,14 @@ def test_unacknowledged_missing_warning_blocks_submission(assessment_context):
     assert missing_row.warning_acknowledged is False
 
     with pytest.raises(AssessmentValidationError):
-        service.submit(assessment_id=assessment.id)
+        service.submit(
+            assessment_id=assessment.id,
+            submitted_by_user_id=assessment_context["user"].id,
+        )
 
     assert assessment.status != "SUBMITTED"
+    assert assessment.submitted_by_user_id is None
+    assert assessment.submitted_at is None
 
     result_count = (
         assessment_context["db"]
@@ -472,7 +538,9 @@ def test_unacknowledged_missing_warning_blocks_submission(assessment_context):
 def test_acknowledged_missing_warning_allows_submission(assessment_context):
     assessment = create_assessment(assessment_context)
     service = AssessmentService(assessment_context["db"])
-
+    production_student = add_production_roster_student(
+        assessment_context
+    )
     imported = service.import_rows(
         assessment_id=assessment.id,
         created_by_user_id=assessment_context["user"].id,
@@ -497,7 +565,10 @@ def test_acknowledged_missing_warning_allows_submission(assessment_context):
 
     assert missing_row.warning_acknowledged is True
 
-    submitted = service.submit(assessment_id=assessment.id)
+    submitted = service.submit(
+        assessment_id=assessment.id,
+        submitted_by_user_id=assessment_context["user"].id,
+    )
 
     assert submitted.status == "SUBMITTED"
 
@@ -505,7 +576,9 @@ def test_acknowledged_missing_warning_allows_submission(assessment_context):
 def test_acknowledged_missing_student_does_not_create_result(assessment_context):
     assessment = create_assessment(assessment_context)
     service = AssessmentService(assessment_context["db"])
-
+    production_student = add_production_roster_student(
+        assessment_context
+    )
     imported = service.import_rows(
         assessment_id=assessment.id,
         created_by_user_id=assessment_context["user"].id,
@@ -533,7 +606,10 @@ def test_acknowledged_missing_student_does_not_create_result(assessment_context)
 
     service.acknowledge_warning(import_row_id=missing_row.id)
 
-    service.submit(assessment_id=assessment.id)
+    service.submit(
+        assessment_id=assessment.id,
+        submitted_by_user_id=assessment_context["user"].id,
+    )
 
     results = (
         assessment_context["db"]
@@ -632,9 +708,11 @@ def test_mapped_student_with_missing_marks_cannot_submit(assessment_context):
     assessment_context["db"].flush()
 
     with pytest.raises(AssessmentValidationError):
-        service.submit(assessment_id=assessment.id)
+        service.submit(assessment_id=assessment.id, submitted_by_user_id=assessment_context["user"].id)
 
     assert assessment.status != "SUBMITTED"
+    assert assessment.submitted_by_user_id is None
+    assert assessment.submitted_at is None
 
     assert (
         assessment_context["db"]
@@ -682,9 +760,11 @@ def test_mapped_student_with_marks_above_maximum_cannot_submit(
     assessment_context["db"].flush()
 
     with pytest.raises(AssessmentValidationError):
-        service.submit(assessment_id=assessment.id)
+        service.submit(assessment_id=assessment.id, submitted_by_user_id=assessment_context["user"].id)
 
     assert assessment.status != "SUBMITTED"
+    assert assessment.submitted_by_user_id is None
+    assert assessment.submitted_at is None
 
     assert (
         assessment_context["db"]
@@ -749,7 +829,10 @@ def test_duplicate_mapped_student_cannot_submit(assessment_context):
     assert second_row.student_id is None
 
     with pytest.raises(AssessmentValidationError):
-        service.submit(assessment_id=assessment.id)
+        service.submit(
+            assessment_id=assessment.id,
+            submitted_by_user_id=assessment_context["user"].id,
+        )
 
     assert assessment.status != "SUBMITTED"
 
@@ -762,3 +845,20 @@ def test_duplicate_mapped_student_cannot_submit(assessment_context):
         .count()
         == 0
     )
+
+
+def test_import_requires_explicit_scope(assessment_context):
+    assessment = create_assessment(assessment_context, configure_scope=False)
+    service = AssessmentService(assessment_context["db"])
+    with pytest.raises(AssessmentValidationError, match="scope"):
+        service.import_rows(
+            assessment_id=assessment.id,
+            created_by_user_id=assessment_context["user"].id,
+            rows=[{
+                "student_business_id": assessment_context["students"][0].student_code,
+                "student_name": assessment_context["students"][0].full_name,
+                "class": "5",
+                "division": "A",
+                "aggregate_marks": "10",
+            }],
+        )

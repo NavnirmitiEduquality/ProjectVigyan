@@ -12,7 +12,13 @@ from app.dependencies import (
     require_permission,
     require_school_access,
 )
-from app.models import Assessment, AssessmentImport, AssessmentImportRow, AssessmentResult, User
+from app.models import (
+    Assessment,
+    AssessmentImport,
+    AssessmentImportRow,
+    AssessmentResult,
+    User,
+)
 from app.services.assessment.service import (
     AssessmentDomainError,
     AssessmentLockedError,
@@ -57,6 +63,10 @@ class ImportRowInput(BaseModel):
 
 class AssessmentImportInput(BaseModel):
     rows: list[ImportRowInput] = Field(min_length=1)
+
+
+class AssessmentScopeInput(BaseModel):
+    class_division_ids: list[UUID] = Field(min_length=1)
 
 
 class RowMappingInput(BaseModel):
@@ -179,6 +189,30 @@ def get_assessment(
     return assessment
 
 
+
+@router.put("/{assessment_id}/scope", response_model=AssessmentResponse)
+def set_assessment_scope(
+    assessment_id: UUID,
+    payload: AssessmentScopeInput,
+    current_user: User = Depends(require_permission("assessment.update")),
+    db: Session = Depends(get_db),
+):
+    assessment = _get_assessment_or_404(db, assessment_id)
+    require_school_access(assessment.school_id, current_user, db)
+
+    try:
+        result = AssessmentService(db).set_scope(
+            assessment_id=assessment_id,
+            class_division_ids=payload.class_division_ids,
+        )
+        db.commit()
+        db.refresh(result)
+        return result
+    except AssessmentDomainError as error:
+        db.rollback()
+        _raise_domain_error(error)
+
+
 @router.post("/{assessment_id}/imports", response_model=AssessmentImportResponse, status_code=status.HTTP_201_CREATED)
 def import_assessment_rows(
     assessment_id: UUID,
@@ -280,7 +314,10 @@ def submit_assessment(
     assessment = _get_assessment_or_404(db, assessment_id)
     require_school_access(assessment.school_id, current_user, db)
     try:
-        result = AssessmentService(db).submit(assessment_id=assessment_id)
+        result = AssessmentService(db).submit(
+            assessment_id=assessment_id,
+            submitted_by_user_id=current_user.id,
+        )
         db.commit()
         db.refresh(result)
         return result

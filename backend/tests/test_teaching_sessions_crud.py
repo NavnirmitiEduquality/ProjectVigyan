@@ -1034,7 +1034,10 @@ def prepare_session_for_completion(
 
         active_tlm = (
             db.query(TLM)
-            .filter(TLM.is_active.is_(True))
+            .filter(
+                TLM.is_active.is_(True),
+                TLM.name != "NA - No TLM Used",
+            )
             .order_by(TLM.name)
             .first()
         )

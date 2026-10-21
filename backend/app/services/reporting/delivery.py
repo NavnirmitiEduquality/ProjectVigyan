@@ -59,6 +59,18 @@ def get_delivery_report(
         query = query.join(User, User.id == TeachingSession.para_teacher_id).filter(
             User.data_origin == "PRODUCTION"
         )
+    elif group_by == "para_teacher_school":
+        group_columns = (
+            TeachingSession.para_teacher_id.label("para_teacher_id"),
+            User.user_code.label("para_teacher_code"),
+            User.full_name.label("para_teacher_name"),
+            ClassDivision.school_id.label("school_id"),
+            School.school_code.label("school_code"),
+            School.school_name.label("school_name"),
+        )
+        query = query.join(
+            User, User.id == TeachingSession.para_teacher_id
+        ).filter(User.data_origin == "PRODUCTION")
     elif group_by != "project":
         raise ValueError("Unsupported delivery grouping.")
     aggregate = query.with_entities(

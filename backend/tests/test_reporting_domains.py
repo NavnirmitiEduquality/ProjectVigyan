@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
@@ -13,8 +13,13 @@ from app.models import (
     Assessment,
     AssessmentImport,
     AssessmentImportRow,
+    ClassDivision,
     AssessmentResult,
     Photo,
+    ClassroomObservation,
+    ClassroomObservationReport,
+    STEMInspection,
+    STEMInspectionReport,
     SessionEngagement,
     SessionEvidence,
     SessionTLM,
@@ -25,6 +30,7 @@ from app.models import (
 from app.models.student import Student
 from app.services.reporting.monitoring import (
     get_class_monitoring,
+    get_para_teacher_monitoring,
     get_school_monitoring,
     get_student_monitoring,
 )
@@ -486,6 +492,163 @@ def test_r7_school_monitoring_includes_assessment_evidence_and_para_teacher(
     db.commit()
 
 
+def test_r7_school_monitoring_includes_observation_report_counts(domain_fixture):
+    fixture = domain_fixture
+    db = fixture["db"]
+    school = fixture["school_one"]
+    division = fixture["division_one"]
+    observer = (
+    db.query(User)
+        .filter(User.user_code.like("RP-V-%"))
+        .one()
+    )
+    para_teacher = (
+        db.query(User).filter(User.user_code.like("RP-PT-%")).one()
+    )
+
+    # Use existing production fixture records, but keep the test data
+    # uncommitted so the final rollback removes it.
+    photos = [
+        Photo(
+            photo_category="TLM_ACTIVITY",
+            storage_key=f"reporting-observation-{index}-{school.id}.jpg",
+            original_filename="observation.jpg",
+            content_type="image/jpeg",
+            file_size_bytes=1024,
+            width=100,
+            height=100,
+            captured_at=date(2026, 6, 3),
+            latitude=Decimal("19.076000"),
+            longitude=Decimal("72.877700"),
+            data_origin="PRODUCTION",
+        )
+        for index in range(4)
+    ]
+    db.add_all(photos)
+    db.flush()
+
+    classroom_pending = ClassroomObservation(
+        observer_id=observer.id,
+        school_id=school.id,
+        target_para_teacher_id=para_teacher.id,
+        school_teacher_id=None,
+        class_division_id=division.id,
+        subject="SCIENCE",
+        topic="Matter",
+        photo_id=photos[0].id,
+        observed_at=__import__("datetime").datetime(2026, 6, 3),
+        data_origin="PRODUCTION",
+    )
+    classroom_complete = ClassroomObservation(
+        observer_id=observer.id,
+        school_id=school.id,
+        target_para_teacher_id=para_teacher.id,
+        school_teacher_id=None,
+        class_division_id=division.id,
+        subject="SCIENCE",
+        topic="Energy",
+        photo_id=photos[1].id,
+        observed_at=__import__("datetime").datetime(2026, 6, 4),
+        data_origin="PRODUCTION",
+    )
+    inspection_pending = STEMInspection(
+        inspector_id=observer.id,
+        para_teacher_id=para_teacher.id,
+        school_id=school.id,
+        class_division_id=division.id,
+        topic="STEM activity",
+        photo_id=photos[2].id,
+        inspected_at=__import__("datetime").datetime(2026, 6, 3),
+        data_origin="PRODUCTION",
+    )
+    inspection_complete = STEMInspection(
+        inspector_id=observer.id,
+        para_teacher_id=para_teacher.id,
+        school_id=school.id,
+        class_division_id=division.id,
+        topic="STEM project",
+        photo_id=photos[3].id,
+        inspected_at=__import__("datetime").datetime(2026, 6, 4),
+        data_origin="PRODUCTION",
+    )
+    db.add_all(
+        [
+            classroom_pending,
+            classroom_complete,
+            inspection_pending,
+            inspection_complete,
+        ]
+    )
+    db.flush()
+
+    db.add_all(
+        [
+            ClassroomObservationReport(
+                observation_id=classroom_pending.id,
+                status="PENDING",
+                data_origin="PRODUCTION",
+            ),
+            ClassroomObservationReport(
+                observation_id=classroom_complete.id,
+                status="COMPLETE",
+                mode="LINK",
+                external_url="https://example.com/classroom-report",
+                data_origin="PRODUCTION",
+            ),
+            STEMInspectionReport(
+                inspection_id=inspection_pending.id,
+                status="PENDING",
+                data_origin="PRODUCTION",
+            ),
+            STEMInspectionReport(
+                inspection_id=inspection_complete.id,
+                status="COMPLETE",
+                mode="LINK",
+                external_url="https://example.com/stem-report",
+                data_origin="PRODUCTION",
+            ),
+        ]
+    )
+    db.flush()
+
+    try:
+        result = get_school_monitoring(
+            db,
+            ReportingFilters(
+                authorized_school_ids={school.id, fixture["school_two"].id},
+                start_date=date(2026, 6, 1),
+                end_date=date(2026, 6, 6),
+            ),
+        )
+
+        assert result["total_schools"] == 2
+
+        items_by_school = {
+            item["school_id"]: item
+            for item in result["items"]
+        }
+
+        assert items_by_school[school.id]["observations"] == {
+            "classroom_observations": 2,
+            "classroom_reports_pending": 1,
+            "classroom_reports_complete": 1,
+            "stem_inspections": 2,
+            "stem_reports_pending": 1,
+            "stem_reports_complete": 1,
+        }
+
+        assert items_by_school[fixture["school_two"].id]["observations"] == {
+            "classroom_observations": 0,
+            "classroom_reports_pending": 0,
+            "classroom_reports_complete": 0,
+            "stem_inspections": 0,
+            "stem_reports_pending": 0,
+            "stem_reports_complete": 0,
+        }
+    finally:
+        db.rollback()
+
+
 def test_r7_class_monitoring_includes_empty_division_and_population(
     domain_fixture,
 ):
@@ -689,3 +852,486 @@ def test_r8_exports_are_real_and_use_same_rows(domain_fixture):
     assert workbook.active["A1"].value == "Project Vigyan"
     assert pdf_type == "application/pdf"
     assert pdf_payload.startswith(b"%PDF")
+
+
+def test_r7_class_monitoring_includes_observation_report_counts(
+    domain_fixture,
+):
+    fixture = domain_fixture
+    db = fixture["db"]
+    school = fixture["school_one"]
+    division = fixture["division_one"]
+    empty_division = fixture["division_two"]
+    try:
+        observer = db.query(User).filter(User.user_code.like("RP-V-%")).one()
+        para_teacher = db.query(User).filter(
+            User.user_code.like("RP-PT-%")
+        ).one()
+
+        photos = [
+            Photo(
+                photo_category="STEM_INSPECTION",
+                storage_key=f"class-monitoring-observation-{i}-{division.id}.jpg",
+                original_filename="observation.jpg",
+                content_type="image/jpeg",
+                file_size_bytes=1024,
+                width=100,
+                height=100,
+                captured_at=date(2026, 6, 3),
+                latitude=Decimal("19.076000"),
+                longitude=Decimal("72.877700"),
+                data_origin="PRODUCTION",
+            )
+            for i in range(8)
+        ]
+        db.add_all(photos)
+        db.flush()
+        classroom_pending = ClassroomObservation(
+            observer_id=observer.id,
+            school_id=school.id,
+            target_para_teacher_id=para_teacher.id,
+            school_teacher_id=None,
+            class_division_id=division.id,
+            subject="SCIENCE",
+            topic="Matter",
+            photo_id=photos[0].id,
+            observed_at=datetime(2026, 6, 3),
+            data_origin="PRODUCTION",
+        )
+        classroom_complete = ClassroomObservation(
+            observer_id=observer.id,
+            school_id=school.id,
+            target_para_teacher_id=para_teacher.id,
+            school_teacher_id=None,
+            class_division_id=division.id,
+            subject="SCIENCE",
+            topic="Energy",
+            photo_id=photos[1].id,
+            observed_at=datetime(2026, 6, 4),
+            data_origin="PRODUCTION",
+        )
+        inspection_pending = STEMInspection(
+            inspector_id=observer.id,
+            para_teacher_id=para_teacher.id,
+            school_id=school.id,
+            class_division_id=division.id,
+            topic="STEM activity",
+            photo_id=photos[2].id,
+            inspected_at=datetime(2026, 6, 3),
+            data_origin="PRODUCTION",
+        )
+        inspection_complete = STEMInspection(
+            inspector_id=observer.id,
+            para_teacher_id=para_teacher.id,
+            school_id=school.id,
+            class_division_id=division.id,
+            topic="STEM project",
+            photo_id=photos[3].id,
+            inspected_at=datetime(2026, 6, 4),
+            data_origin="PRODUCTION",
+        )
+        inspection_without_division = STEMInspection(
+            inspector_id=observer.id,
+            para_teacher_id=para_teacher.id,
+            school_id=school.id,
+            class_division_id=None,
+            topic="School-level STEM inspection",
+            photo_id=photos[4].id,
+            inspected_at=datetime(2026, 6, 4),
+            data_origin="PRODUCTION",
+        )
+        test_origin_observation = ClassroomObservation(
+            observer_id=observer.id,
+            school_id=school.id,
+            target_para_teacher_id=para_teacher.id,
+            school_teacher_id=None,
+            class_division_id=division.id,
+            subject="SCIENCE",
+            topic="Should not count",
+            photo_id=photos[5].id,
+            observed_at=datetime(2026, 6, 4),
+            data_origin="TEST",
+        )
+        out_of_range_observation = ClassroomObservation(
+            observer_id=observer.id,
+            school_id=school.id,
+            target_para_teacher_id=para_teacher.id,
+            school_teacher_id=None,
+            class_division_id=division.id,
+            subject="SCIENCE",
+            topic="Outside reporting period",
+            photo_id=photos[6].id,
+            observed_at=datetime(2026, 6, 7),
+            data_origin="PRODUCTION",
+        )
+        out_of_range_inspection = STEMInspection(
+            inspector_id=observer.id,
+            para_teacher_id=para_teacher.id,
+            school_id=school.id,
+            class_division_id=division.id,
+            topic="Outside reporting period",
+            photo_id=photos[7].id,
+            inspected_at=datetime(2026, 6, 7),
+            data_origin="PRODUCTION",
+        )
+        db.add_all([
+            classroom_pending,
+            classroom_complete,
+            inspection_pending,
+            inspection_complete,
+            inspection_without_division,
+            test_origin_observation,
+            out_of_range_observation,
+            out_of_range_inspection,
+        ])
+        db.flush()
+
+        db.add_all([
+            ClassroomObservationReport(
+                observation_id=classroom_pending.id,
+                status="PENDING",
+                data_origin="PRODUCTION",
+            ),
+            ClassroomObservationReport(
+                observation_id=classroom_complete.id,
+                status="COMPLETE",
+                mode="LINK",
+                external_url="https://example.com/classroom-report",
+                data_origin="PRODUCTION",
+            ),
+            STEMInspectionReport(
+                inspection_id=inspection_pending.id,
+                status="PENDING",
+                data_origin="PRODUCTION",
+            ),
+            STEMInspectionReport(
+                inspection_id=inspection_complete.id,
+                status="COMPLETE",
+                mode="LINK",
+                external_url="https://example.com/stem-report",
+                data_origin="PRODUCTION",
+            ),
+            STEMInspectionReport(
+                inspection_id=inspection_without_division.id,
+                status="PENDING",
+                data_origin="PRODUCTION",
+            ),
+        ])
+        db.flush()
+
+        result = get_class_monitoring(
+            db,
+            ReportingFilters(
+                authorized_school_ids={school.id},
+                start_date=date(2026, 6, 1),
+                end_date=date(2026, 6, 6),
+            ),
+        )
+        by_id = {item["class_division_id"]: item for item in result["items"]}
+
+        assert by_id[division.id]["observations"] == {
+            "classroom_observations": 2,
+            "classroom_reports_pending": 1,
+            "classroom_reports_complete": 1,
+            "stem_inspections": 2,
+            "stem_reports_pending": 1,
+            "stem_reports_complete": 1,
+        }
+        assert by_id[empty_division.id]["observations"] == {
+            "classroom_observations": 0,
+            "classroom_reports_pending": 0,
+            "classroom_reports_complete": 0,
+            "stem_inspections": 0,
+            "stem_reports_pending": 0,
+            "stem_reports_complete": 0,
+        }
+    finally:
+        db.rollback()
+
+
+def test_para_teacher_monitoring_keeps_observations_with_recorded_school(
+    domain_fixture,
+):
+    fixture = domain_fixture
+    db = fixture["db"]
+    teacher = db.query(User).filter(
+        User.user_code.like("RP-PT-%")
+    ).one()
+    observer = db.query(User).filter(
+        User.user_code.like("RP-V-%")
+    ).one()
+    school = fixture["school_two"]
+    division = fixture["student_other_school"].class_division_id
+
+    try:
+        photo = Photo(
+            photo_category="STEM_INSPECTION",
+            storage_key=f"para-monitoring-history-{school.id}.jpg",
+            original_filename="observation.jpg",
+            content_type="image/jpeg",
+            file_size_bytes=1024,
+            width=100,
+            height=100,
+            captured_at=date(2026, 6, 3),
+            latitude=Decimal("19.076000"),
+            longitude=Decimal("72.877700"),
+            data_origin="PRODUCTION",
+        )
+        db.add(photo)
+        db.flush()
+
+        observation = ClassroomObservation(
+            observer_id=observer.id,
+            school_id=school.id,
+            target_para_teacher_id=teacher.id,
+            school_teacher_id=None,
+            class_division_id=division,
+            subject="SCIENCE",
+            topic="Historical school attribution",
+            photo_id=photo.id,
+            observed_at=datetime(2026, 6, 3),
+            data_origin="PRODUCTION",
+        )
+        db.add(observation)
+        db.flush()
+
+        db.add(
+            ClassroomObservationReport(
+                observation_id=observation.id,
+                status="PENDING",
+                data_origin="PRODUCTION",
+            )
+        )
+        db.flush()
+
+        project_wide = ReportingFilters(
+            authorized_school_ids=None,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 6),
+        )
+        result = get_para_teacher_monitoring(db, project_wide)
+        historical_rows = [
+            item
+            for item in result["items"]
+            if item["para_teacher_id"] == teacher.id
+            and item["school_id"] == school.id
+        ]
+
+        assert len(historical_rows) == 1
+        assert historical_rows[0]["observations"][
+            "classroom_observations"
+        ] == 1
+        assert historical_rows[0]["observations"][
+            "classroom_reports_pending"
+        ] == 1
+
+        own_school_result = get_para_teacher_monitoring(
+            db,
+            ReportingFilters(
+                authorized_school_ids={fixture["school_one"].id},
+                school_id=fixture["school_one"].id,
+                start_date=date(2026, 6, 1),
+                end_date=date(2026, 6, 6),
+            ),
+        )
+        assert all(
+            item["school_id"] == fixture["school_one"].id
+            for item in own_school_result["items"]
+        )
+        assert not any(
+            item["school_id"] == school.id
+            for item in own_school_result["items"]
+        )
+    finally:
+        db.rollback()
+
+
+def test_class_assessment_report_respects_recorded_scope(domain_fixture):
+    from app.models.assessment import AssessmentClassDivision
+    from app.services.reporting.monitoring import _class_assessment_report
+
+    fixture = domain_fixture
+    db = fixture["db"]
+    assessment = fixture["assessments"][1]  # Endline
+    division_one = fixture["division_one"]
+    division_two = fixture["division_two"]
+
+    try:
+        # The fixture's two endline results belong to division_one.
+        # Record division_two as the assessment's only in-scope division.
+        db.add(
+            AssessmentClassDivision(
+                assessment_id=assessment.id,
+                class_division_id=division_two.id,
+            )
+        )
+        db.flush()
+
+        report = _class_assessment_report(
+            db,
+            assessment,
+            {fixture["school_one"].id},
+            division_one.id,
+        )
+
+        assert report["assessment_import_scope"] == "selected_class_divisions"
+        assert report["assessment_import_class_divisions"] == [
+            {
+                "class_division_id": division_two.id,
+                "class_level": division_two.class_level,
+                "division": division_two.division,
+            }
+        ]
+        assert report["result_count"] == 0
+        assert report["results"] == []
+
+        # A historical assessment with no recorded scope remains explicitly unknown.
+        historical = fixture["assessments"][0]
+        historical_report = _class_assessment_report(
+            db,
+            historical,
+            {fixture["school_one"].id},
+            division_one.id,
+        )
+        assert (
+            historical_report["assessment_import_scope"]
+            == "unknown_historical_scope"
+        )
+        assert historical_report["assessment_import_class_divisions"] == []
+    finally:
+        db.rollback()
+
+
+def test_para_teacher_monitoring_keeps_session_metrics_attributed_by_school(
+    domain_fixture,
+):
+    fixture = domain_fixture
+    db = fixture["db"]
+    teacher = db.query(User).filter(
+        User.user_code.like("RP-PT-%")
+    ).one()
+    school_one = fixture["school_one"]
+    school_two = fixture["school_two"]
+    division_two = (
+        db.query(ClassDivision)
+        .filter(
+            ClassDivision.id
+            == fixture["student_other_school"].class_division_id
+        )
+        .one()
+    )
+
+    try:
+        def report(school_id=None):
+            return get_para_teacher_monitoring(
+                db,
+                ReportingFilters(
+                    authorized_school_ids=None,
+                    school_id=school_id,
+                    start_date=date(2026, 6, 1),
+                    end_date=date(2026, 6, 6),
+                ),
+            )
+
+        def teacher_row(result, school_id):
+            matches = [
+                item
+                for item in result["items"]
+                if str(item["para_teacher_id"]) == str(teacher.id)
+                and str(item["school_id"]) == str(school_id)
+            ]
+            assert len(matches) <= 1, (
+                f"Expected at most one row for teacher {teacher.id} "
+                f"at school {school_id}; got {matches!r}"
+            )
+            return matches[0] if matches else None
+
+        baseline_one = teacher_row(report(school_one.id), school_one.id)
+        baseline_two = teacher_row(report(school_two.id), school_two.id)
+        session = TeachingSession(
+            class_division_id=division_two.id,
+            para_teacher_id=teacher.id,
+            session_date=date(2026, 6, 3),
+            status="COMPLETED",
+            duration_minutes=120,
+            data_origin="PRODUCTION",
+        )
+        db.add(session)
+        db.flush()
+
+        db.add(
+            SessionEngagement(
+                teaching_session_id=session.id,
+                score=10,
+                data_origin="PRODUCTION",
+            )
+        )
+        db.add(
+            SessionTLM(
+                teaching_session_id=session.id,
+                tlm_id=fixture["normal_tlm"].id,
+                quantity=1,
+                data_origin="PRODUCTION",
+            )
+        )
+        db.flush()
+
+
+        school_one_filters = ReportingFilters(
+            authorized_school_ids=None,
+            school_id=school_one.id,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 6),
+        )
+        raw_delivery = get_delivery_report(
+            db, school_one_filters, group_by="para_teacher"
+        )
+        assert raw_delivery["items"], (
+            f"No delivery rows for school_one={school_one.id}; "
+            f"raw delivery result={raw_delivery}"
+        )
+        school_one_row = teacher_row(report(school_one.id), school_one.id)
+        school_two_row = teacher_row(report(school_two.id), school_two.id)
+        project_result = report()
+        project_one_row = teacher_row(project_result, school_one.id)
+        project_two_row = teacher_row(project_result, school_two.id)
+
+        # The new completed session belongs to School Two only.
+        assert school_two_row["completed_sessions"] == (
+            (baseline_two or {}).get("completed_sessions", 0) + 1
+        )
+        assert school_one_row["completed_sessions"] == (
+            (baseline_one or {}).get("completed_sessions", 0)
+        )
+
+        assert school_two_row["completed_duration_minutes"] == (
+            (baseline_two or {}).get("completed_duration_minutes", 0) + 120
+        )
+        assert school_one_row["completed_duration_minutes"] == (
+            (baseline_one or {}).get("completed_duration_minutes", 0)
+        )
+
+        delivery_keys = (
+            "total_sessions",
+            "planned_sessions",
+            "upcoming_sessions",
+            "in_progress_sessions",
+            "completed_sessions",
+            "cancelled_sessions",
+            "completed_duration_minutes",
+            "completed_sessions_with_duration",
+            "teaching_hours",
+            "average_completed_duration_minutes",
+            "completion_percentage",
+        )
+
+        for key in delivery_keys:
+            assert project_one_row.get(key) == school_one_row.get(key)
+            assert project_two_row.get(key) == school_two_row.get(key)
+
+        assert project_one_row["engagement"] == school_one_row["engagement"]
+        assert project_two_row["engagement"] == school_two_row["engagement"]
+        assert project_one_row["tlm"] == school_one_row["tlm"]
+        assert project_two_row["tlm"] == school_two_row["tlm"]
+    finally:
+        db.rollback()

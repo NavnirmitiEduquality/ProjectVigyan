@@ -166,8 +166,21 @@ def _can_view_teacher(
 ) -> None:
     if requested_teacher_id == current_user.id:
         return
-    if get_authorized_school_ids(current_user, db) is None:
+
+    from app.dependencies import get_user_role_codes
+
+    role_codes = get_user_role_codes(current_user, db)
+    cross_teacher_roles = {
+        "PLATFORM_OWNER",
+        "SYSTEM_ADMIN",
+        "DATA_MANAGER",
+        "MANAGEMENT",
+        "STEM_COORDINATOR",
+    }
+
+    if role_codes.intersection(cross_teacher_roles):
         return
+
     raise HTTPException(
         status_code=403,
         detail="You are not authorized to view another para-teacher's calendar.",

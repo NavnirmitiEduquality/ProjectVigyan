@@ -649,7 +649,7 @@ def create_para_teachers(
             user_id=user.id,
             scope_type="SCHOOL",
             school_id=school.id,
-            start_date=date.today(),
+            start_date=date(2026, 1, 1),
             end_date=None,
             is_active=True,
         )

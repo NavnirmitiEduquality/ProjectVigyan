@@ -142,7 +142,12 @@ def save_engagement(
 
         existing_engagement.score = payload.score
 
-        db.commit()
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
         db.refresh(existing_engagement)
 
         return existing_engagement
@@ -171,7 +176,13 @@ def save_engagement(
     )
 
     db.add(engagement)
-    db.commit()
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
     db.refresh(engagement)
 
     return engagement

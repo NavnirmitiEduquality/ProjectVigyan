@@ -336,3 +336,26 @@ def test_invalid_data_origin_is_rejected():
 
     finally:
         db.close()
+
+
+def test_compensation_preserves_new_photo_after_commit():
+    from unittest.mock import Mock
+
+    from app.routers.session_tlm import (
+        _compensate_failed_transaction,
+    )
+
+    db = Mock()
+    service = Mock()
+    operation = Mock()
+    operation.new_storage_keys = ("new-photo-key",)
+
+    _compensate_failed_transaction(
+        db,
+        service,
+        operation,
+        committed=True,
+    )
+
+    db.rollback.assert_called_once_with()
+    service.compensate_new_storage.assert_not_called()

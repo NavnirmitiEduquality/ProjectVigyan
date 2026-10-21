@@ -268,18 +268,23 @@ def _compensate_failed_transaction(
     db: Session,
     service: SessionEvidenceService,
     operation,
+    *,
+    committed: bool = False,
 ) -> None:
     """
-    Roll back the database transaction and remove any
-    newly-created physical photo objects.
+    Roll back the database transaction and remove newly-created
+    physical photo objects only if the commit did not succeed.
     """
-
     db.rollback()
 
-    if operation is not None:
-        service.compensate_new_storage(
-            operation.new_storage_keys,
-        )
+    if committed or operation is None:
+        return
+
+    service.compensate_new_storage(
+        operation.new_storage_keys,
+    )
+
+
 
 
 # ------------------------------------------------------------------
@@ -389,6 +394,7 @@ def create_session_evidence(
     )
 
     operation = None
+    committed = False
 
     try:
         operation = service.create(
@@ -398,6 +404,7 @@ def create_session_evidence(
         )
 
         db.commit()
+        committed = True
         db.refresh(operation.session_evidence)
 
     except (
@@ -411,6 +418,7 @@ def create_session_evidence(
             db,
             service,
             operation,
+            committed=committed,
         )
         _raise_service_http_error(exc)
 
@@ -419,6 +427,7 @@ def create_session_evidence(
             db,
             service,
             operation,
+            committed=committed,
         )
 
         raise HTTPException(
@@ -431,6 +440,7 @@ def create_session_evidence(
             db,
             service,
             operation,
+            committed=committed,
         )
         raise
 
@@ -477,6 +487,7 @@ def replace_session_evidence(
     )
 
     operation = None
+    committed = False
 
     try:
         operation = service.replace(
@@ -486,6 +497,7 @@ def replace_session_evidence(
         )
 
         db.commit()
+        committed = True
         db.refresh(operation.session_evidence)
 
     except (
@@ -498,6 +510,7 @@ def replace_session_evidence(
             db,
             service,
             operation,
+            committed=committed,
         )
         _raise_service_http_error(exc)
 
@@ -506,6 +519,7 @@ def replace_session_evidence(
             db,
             service,
             operation,
+            committed=committed,
         )
 
         raise HTTPException(
@@ -518,6 +532,7 @@ def replace_session_evidence(
             db,
             service,
             operation,
+            committed=committed,
         )
         raise
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from sqlalchemy import func
+from datetime import date, timedelta
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -8,13 +9,19 @@ from app.models import (
     AssessmentImport,
     AssessmentImportRow,
     AssessmentResult,
+    ClassroomObservation,
+    ClassroomObservationReport,
     ClassDivision,
     School,
+    STEMInspection,
+    STEMInspectionReport,
     SessionEvidence,
     Student,
     TeachingSession,
     User,
+    UserAssignment,
 )
+from app.models.assessment import AssessmentClassDivision
 from app.services.reporting.assessment import (
     get_assessment_report,
     get_longitudinal_report,
@@ -182,6 +189,132 @@ def get_school_monitoring(db: Session, filters: ReportingFilters) -> dict:
         .all()
     )
 
+
+    classroom_observations = {}
+    stem_inspections = {}
+
+    if school_ids:
+        classroom_rows = (
+            db.query(
+                ClassroomObservation.school_id,
+                func.count(ClassroomObservation.id),
+                func.count(
+                    case(
+                        (
+                            ClassroomObservationReport.status == "PENDING",
+                            ClassroomObservationReport.id,
+                        ),
+                        else_=None,
+                    )
+                ),
+                func.count(
+                    case(
+                        (
+                            ClassroomObservationReport.status == "COMPLETE",
+                            ClassroomObservationReport.id,
+                        ),
+                        else_=None,
+                    )
+                ),
+            )
+            .outerjoin(
+                ClassroomObservationReport,
+                (
+                    ClassroomObservationReport.observation_id
+                    == ClassroomObservation.id
+                )
+                & (
+                    ClassroomObservationReport.data_origin == "PRODUCTION"
+                ),
+            )
+            .filter(
+                ClassroomObservation.school_id.in_(school_ids),
+                ClassroomObservation.data_origin == "PRODUCTION",
+                *(
+                    [ClassroomObservation.observed_at >= filters.start_date]
+                    if filters.start_date
+                    else []
+                ),
+                *(
+                    [
+                        ClassroomObservation.observed_at
+                        < filters.end_date + timedelta(days=1)
+                    ]
+                    if filters.end_date
+                    else []
+                ),
+            )
+            .group_by(ClassroomObservation.school_id)
+            .all()
+        )
+        classroom_observations = {
+            school_id: {
+                "classroom_observations": int(total or 0),
+                "classroom_reports_pending": int(pending or 0),
+                "classroom_reports_complete": int(complete or 0),
+            }
+            for school_id, total, pending, complete in classroom_rows
+        }
+
+        inspection_rows = (
+            db.query(
+                STEMInspection.school_id,
+                func.count(STEMInspection.id),
+                func.count(
+                    case(
+                        (
+                            STEMInspectionReport.status == "PENDING",
+                            STEMInspectionReport.id,
+                        ),
+                        else_=None,
+                    )
+                ),
+                func.count(
+                    case(
+                        (
+                            STEMInspectionReport.status == "COMPLETE",
+                            STEMInspectionReport.id,
+                        ),
+                        else_=None,
+                    )
+                ),
+            )
+            .outerjoin(
+                STEMInspectionReport,
+                (
+                    STEMInspectionReport.inspection_id == STEMInspection.id
+                )
+                & (STEMInspectionReport.data_origin == "PRODUCTION"),
+            )
+            .filter(
+                STEMInspection.school_id.in_(school_ids),
+                STEMInspection.data_origin == "PRODUCTION",
+                *(
+                    [STEMInspection.inspected_at >= filters.start_date]
+                    if filters.start_date
+                    else []
+                ),
+                *(
+                    [
+                        STEMInspection.inspected_at
+                        < filters.end_date + timedelta(days=1)
+                    ]
+                    if filters.end_date
+                    else []
+                ),
+            )
+            .group_by(STEMInspection.school_id)
+            .all()
+        )
+        stem_inspections = {
+            school_id: {
+                "stem_inspections": int(total or 0),
+                "stem_reports_pending": int(pending or 0),
+                "stem_reports_complete": int(complete or 0),
+            }
+            for school_id, total, pending, complete in inspection_rows
+        }
+
     latest_assessments = {}
 
     if filters.academic_year_id is not None and school_ids:
@@ -300,6 +433,16 @@ def get_school_monitoring(db: Session, filters: ReportingFilters) -> dict:
             "engagement": engagement.get(school.id, {"school_id": school.id}),
             "tlm": tlm.get(school.id, {"school_id": school.id}),
             "assessment": assessment_summary,
+            "observations": {
+                "classroom_observations": 0,
+                "classroom_reports_pending": 0,
+                "classroom_reports_complete": 0,
+                "stem_inspections": 0,
+                "stem_reports_pending": 0,
+                "stem_reports_complete": 0,
+                **classroom_observations.get(school.id, {}),
+                **stem_inspections.get(school.id, {}),
+            },
             "para_teachers": int(para_teachers.get(school.id, 0)),
             "evidence": {
                 "eligible_completed_sessions": int(
@@ -334,6 +477,17 @@ def _class_assessment_report(
         return None
 
     report = get_assessment_report(db, assessment.id, school_ids)
+    scoped_divisions = (
+        db.query(ClassDivision.id, ClassDivision.class_level, ClassDivision.division)
+        .join(
+            AssessmentClassDivision,
+            AssessmentClassDivision.class_division_id == ClassDivision.id,
+        )
+        .filter(AssessmentClassDivision.assessment_id == assessment.id)
+        .order_by(ClassDivision.class_level, ClassDivision.division)
+        .all()
+    )
+    recorded_scope = bool(scoped_divisions)
     result_rows = report.get("results", [])
     result_student_ids = {
         row["student_id"] for row in result_rows
@@ -350,10 +504,18 @@ def _class_assessment_report(
             .all()
         )
 
+    scoped_division_ids = {
+        division.id for division in scoped_divisions
+    }
+
     class_results = [
         row
         for row in result_rows
         if student_divisions.get(row["student_id"]) == class_division_id
+        and (
+            not recorded_scope
+            or class_division_id in scoped_division_ids
+        )
     ]
 
     def numeric_average(key):
@@ -378,7 +540,19 @@ def _class_assessment_report(
         "average_marks": numeric_average("aggregate_marks"),
         "average_percentage": numeric_average("percentage"),
         "results": class_results,
-        "assessment_import_scope": "school_wide",
+        "assessment_import_scope": (
+            "selected_class_divisions"
+            if recorded_scope
+            else "unknown_historical_scope"
+        ),
+        "assessment_import_class_divisions": [
+            {
+                "class_division_id": division.id,
+                "class_level": division.class_level,
+                "division": division.division,
+            }
+            for division in scoped_divisions
+        ],
         "assessment_import_quality": {
             "imported_rows": report.get("imported_rows"),
             "mapped_rows": report.get("mapped_rows"),
@@ -611,6 +785,139 @@ def get_class_monitoring(db: Session, filters: ReportingFilters) -> dict:
         .all()
     )
 
+    classroom_observations = {}
+    stem_inspections = {}
+
+    classroom_rows = (
+        db.query(
+            ClassroomObservation.class_division_id,
+            func.count(ClassroomObservation.id),
+            func.count(
+                case(
+                    (
+                        ClassroomObservationReport.status == "PENDING",
+                        ClassroomObservationReport.id,
+                    ),
+                    else_=None,
+                )
+            ),
+            func.count(
+                case(
+                    (
+                        ClassroomObservationReport.status == "COMPLETE",
+                        ClassroomObservationReport.id,
+                    ),
+                    else_=None,
+                )
+            ),
+        )
+        .join(
+            ClassDivision,
+            ClassDivision.id == ClassroomObservation.class_division_id,
+        )
+        .outerjoin(
+            ClassroomObservationReport,
+            (
+                ClassroomObservationReport.observation_id
+                == ClassroomObservation.id
+            )
+            & (ClassroomObservationReport.data_origin == "PRODUCTION"),
+        )
+        .filter(
+            ClassroomObservation.class_division_id.in_(division_ids),
+            ClassroomObservation.data_origin == "PRODUCTION",
+            ClassDivision.data_origin == "PRODUCTION",
+            *(
+                [ClassroomObservation.observed_at >= filters.start_date]
+                if filters.start_date
+                else []
+            ),
+            *(
+                [
+                    ClassroomObservation.observed_at
+                    < filters.end_date + timedelta(days=1)
+                ]
+                if filters.end_date
+                else []
+            ),
+        )
+        .group_by(ClassroomObservation.class_division_id)
+        .all()
+    )
+
+    classroom_observations = {
+        division_id: {
+            "classroom_observations": int(total or 0),
+            "classroom_reports_pending": int(pending or 0),
+            "classroom_reports_complete": int(complete or 0),
+        }
+        for division_id, total, pending, complete in classroom_rows
+    }
+
+    inspection_rows = (
+        db.query(
+            STEMInspection.class_division_id,
+            func.count(STEMInspection.id),
+            func.count(
+                case(
+                    (
+                        STEMInspectionReport.status == "PENDING",
+                        STEMInspectionReport.id,
+                    ),
+                    else_=None,
+                )
+            ),
+            func.count(
+                case(
+                    (
+                        STEMInspectionReport.status == "COMPLETE",
+                        STEMInspectionReport.id,
+                    ),
+                    else_=None,
+                )
+            ),
+        )
+        .join(
+            ClassDivision,
+            ClassDivision.id == STEMInspection.class_division_id,
+        )
+        .outerjoin(
+            STEMInspectionReport,
+            (
+                STEMInspectionReport.inspection_id == STEMInspection.id
+            )
+            & (STEMInspectionReport.data_origin == "PRODUCTION"),
+        )
+        .filter(
+            STEMInspection.class_division_id.in_(division_ids),
+            STEMInspection.data_origin == "PRODUCTION",
+            ClassDivision.data_origin == "PRODUCTION",
+            *(
+                [STEMInspection.inspected_at >= filters.start_date]
+                if filters.start_date
+                else []
+            ),
+            *(
+                [
+                    STEMInspection.inspected_at
+                    < filters.end_date + timedelta(days=1)
+                ]
+                if filters.end_date
+                else []
+            ),
+        )
+        .group_by(STEMInspection.class_division_id)
+        .all()
+    )
+
+    stem_inspections = {
+        division_id: {
+            "stem_inspections": int(total or 0),
+            "stem_reports_pending": int(pending or 0),
+            "stem_reports_complete": int(complete or 0),
+        }
+        for division_id, total, pending, complete in inspection_rows
+    }
 
     items = []
 
@@ -736,6 +1043,16 @@ def get_class_monitoring(db: Session, filters: ReportingFilters) -> dict:
             "engagement": engagement.get(division.id),
             "tlm": tlm.get(division.id),
             "assessment": assessment_summary,
+            "observations": {
+                "classroom_observations": 0,
+                "classroom_reports_pending": 0,
+                "classroom_reports_complete": 0,
+                "stem_inspections": 0,
+                "stem_reports_pending": 0,
+                "stem_reports_complete": 0,
+                **classroom_observations.get(division.id, {}),
+                **stem_inspections.get(division.id, {}),
+            },
             "attention": attention,
         })
 
@@ -958,21 +1275,319 @@ def get_student_monitoring(
 
 
 def get_para_teacher_monitoring(db: Session, filters: ReportingFilters) -> dict:
-    delivery = get_delivery_report(db, filters, group_by="para_teacher")["items"]
-    engagement = {
-        item["para_teacher_id"]: item
-        for item in get_engagement_report(db, filters, group_by="para_teacher")["items"]
+    delivery_items = get_delivery_report(
+        db, filters, group_by="para_teacher_school"
+    )["items"]
+    engagement_items = get_engagement_report(
+        db, filters, group_by="para_teacher_school"
+    )["items"]
+    tlm_items = get_tlm_report(
+        db, filters, group_by="para_teacher_school"
+    )["items"]
+
+    def pair_key(item):
+        return (item["para_teacher_id"], item["school_id"])
+
+    delivery_by_pair = {pair_key(item): item for item in delivery_items}
+    engagement_by_pair = {pair_key(item): item for item in engagement_items}
+    tlm_by_pair = {pair_key(item): item for item in tlm_items}
+    observation_counts = {}
+
+    classroom_query = (
+        db.query(
+            ClassroomObservation.target_para_teacher_id.label("para_teacher_id"),
+            ClassroomObservation.school_id.label("school_id"),
+            func.count(ClassroomObservation.id).label("total"),
+            func.count(
+                case(
+                    (
+                        ClassroomObservationReport.status == "PENDING",
+                        ClassroomObservationReport.id,
+                    ),
+                    else_=None,
+                )
+            ).label("pending"),
+            func.count(
+                case(
+                    (
+                        ClassroomObservationReport.status == "COMPLETE",
+                        ClassroomObservationReport.id,
+                    ),
+                    else_=None,
+                )
+            ).label("complete"),
+        )
+        .join(
+            User,
+            User.id == ClassroomObservation.target_para_teacher_id,
+        )
+        .outerjoin(
+            ClassroomObservationReport,
+            (
+                ClassroomObservationReport.observation_id
+                == ClassroomObservation.id
+            )
+            & (ClassroomObservationReport.data_origin == "PRODUCTION"),
+        )
+        .filter(
+            ClassroomObservation.target_para_teacher_id.isnot(None),
+            ClassroomObservation.data_origin == "PRODUCTION",
+            User.data_origin == "PRODUCTION",
+        )
+    )
+
+    if filters.authorized_school_ids is not None:
+        classroom_query = classroom_query.filter(
+            ClassroomObservation.school_id.in_(filters.authorized_school_ids)
+        )
+    if filters.school_id is not None:
+        classroom_query = classroom_query.filter(
+            ClassroomObservation.school_id == filters.school_id
+        )
+    if filters.start_date is not None:
+        classroom_query = classroom_query.filter(
+            ClassroomObservation.observed_at >= filters.start_date
+        )
+    if filters.end_date is not None:
+        classroom_query = classroom_query.filter(
+            ClassroomObservation.observed_at
+            < filters.end_date + timedelta(days=1)
+        )
+
+    for teacher_id, school_id, total, pending, complete in classroom_query.group_by(
+        ClassroomObservation.target_para_teacher_id,
+        ClassroomObservation.school_id,
+    ).all():
+        observation_counts.setdefault((teacher_id, school_id), {}).update(
+            {
+                "classroom_observations": int(total or 0),
+                "classroom_reports_pending": int(pending or 0),
+                "classroom_reports_complete": int(complete or 0),
+            }
+        )
+
+    inspection_query = (
+        db.query(
+            STEMInspection.para_teacher_id.label("para_teacher_id"),
+            STEMInspection.school_id.label("school_id"),
+            func.count(STEMInspection.id).label("total"),
+            func.count(
+                case(
+                    (
+                        STEMInspectionReport.status == "PENDING",
+                        STEMInspectionReport.id,
+                    ),
+                    else_=None,
+                )
+            ).label("pending"),
+            func.count(
+                case(
+                    (
+                        STEMInspectionReport.status == "COMPLETE",
+                        STEMInspectionReport.id,
+                    ),
+                    else_=None,
+                )
+            ).label("complete"),
+        )
+        .join(User, User.id == STEMInspection.para_teacher_id)
+        .outerjoin(
+            STEMInspectionReport,
+            (
+                STEMInspectionReport.inspection_id == STEMInspection.id
+            )
+            & (STEMInspectionReport.data_origin == "PRODUCTION"),
+        )
+        .filter(
+            STEMInspection.data_origin == "PRODUCTION",
+            User.data_origin == "PRODUCTION",
+        )
+    )
+
+    if filters.authorized_school_ids is not None:
+        inspection_query = inspection_query.filter(
+            STEMInspection.school_id.in_(filters.authorized_school_ids)
+        )
+    if filters.school_id is not None:
+        inspection_query = inspection_query.filter(
+            STEMInspection.school_id == filters.school_id
+        )
+    if filters.start_date is not None:
+        inspection_query = inspection_query.filter(
+            STEMInspection.inspected_at >= filters.start_date
+        )
+    if filters.end_date is not None:
+        inspection_query = inspection_query.filter(
+            STEMInspection.inspected_at < filters.end_date + timedelta(days=1)
+        )
+
+    for teacher_id, school_id, total, pending, complete in inspection_query.group_by(
+        STEMInspection.para_teacher_id,
+        STEMInspection.school_id,
+    ).all():
+        observation_counts.setdefault((teacher_id, school_id), {}).update(
+            {
+                "stem_inspections": int(total or 0),
+                "stem_reports_pending": int(pending or 0),
+                "stem_reports_complete": int(complete or 0),
+            }
+        )
+
+    teacher_ids = (
+        {teacher_id for teacher_id, _school_id in observation_counts}
+        | {item["para_teacher_id"] for item in delivery_items}
+    )
+
+    # Resolve each teacher's most recent active school assignment.
+    today = date.today()
+    assignment_rows = (
+        db.query(
+            UserAssignment.user_id,
+            UserAssignment.school_id,
+            UserAssignment.start_date,
+        )
+        .join(User, User.id == UserAssignment.user_id)
+        .filter(
+            UserAssignment.user_id.in_(teacher_ids),
+            UserAssignment.scope_type == "SCHOOL",
+            UserAssignment.school_id.is_not(None),
+            UserAssignment.is_active.is_(True),
+            UserAssignment.start_date <= today,
+            (
+                UserAssignment.end_date.is_(None)
+                | (UserAssignment.end_date >= today)
+            ),
+            User.data_origin == "PRODUCTION",
+        )
+        .order_by(
+            UserAssignment.user_id,
+            UserAssignment.start_date.desc(),
+        )
+        .all()
+    )
+    teacher_school_ids = {}
+    for user_id, school_id, _start_date in assignment_rows:
+        teacher_school_ids.setdefault(user_id, school_id)
+
+    # Include both current assignment schools and schools recorded on
+    # authorized observation/inspection records.
+    school_ids = (
+        set(teacher_school_ids.values())
+        | {school_id for _teacher_id, school_id in observation_counts}
+        | {item["school_id"] for item in delivery_items}
+    )
+    if filters.authorized_school_ids is not None:
+        school_ids &= filters.authorized_school_ids
+    if filters.school_id is not None:
+        school_ids &= {filters.school_id}
+    schools = {
+        school.id: school
+        for school in db.query(School)
+        .filter(
+            School.id.in_(school_ids),
+            School.data_origin == "PRODUCTION",
+        )
+        .all()
     }
-    tlm = {
-        item["para_teacher_id"]: item
-        for item in get_tlm_report(db, filters, group_by="para_teacher")["items"]
+
+    # Each output row represents a teacher-school pair. Session metrics
+    # are grouped by the school of each session; observation counts remain
+    # attributed to the school recorded on each observation.
+    teacher_school_pairs = (
+        set(delivery_by_pair)
+        | set(engagement_by_pair)
+        | set(tlm_by_pair)
+        | set(observation_counts)
+    )
+
+    # Include schools represented by production sessions in the filtered period.
+    session_pair_query = apply_session_filters(
+        db,
+        production_session_query(db),
+        filters,
+    ).with_entities(
+        TeachingSession.para_teacher_id,
+        ClassDivision.school_id,
+    ).distinct()
+
+    teacher_school_pairs.update(
+        (teacher_id, school_id)
+        for teacher_id, school_id in session_pair_query.all()
+        if teacher_id is not None
+    )
+    teacher_school_pairs.update(
+        (teacher_id, school_id)
+        for teacher_id, school_id in teacher_school_ids.items()
+        if school_id in schools
+    )
+    session_school_ids = {
+        school_id for _teacher_id, school_id in teacher_school_pairs
     }
-    items = []
-    for item in delivery:
-        para_teacher_id = item["para_teacher_id"]
-        items.append({
-            **item,
-            "engagement": engagement.get(para_teacher_id),
-            "tlm": tlm.get(para_teacher_id),
+    missing_school_ids = session_school_ids - set(schools)
+
+    if missing_school_ids:
+        additional_schools = (
+            db.query(School)
+            .filter(
+                School.id.in_(missing_school_ids),
+                School.data_origin == "PRODUCTION",
+            )
+            .all()
+        )
+        schools.update({
+            school.id: school for school in additional_schools
         })
-    return {"items": items, "total_para_teachers": len(items)}
+    items = []
+    for teacher_id, school_id in teacher_school_pairs:
+        school = schools.get(school_id)
+        if school is None:
+            continue
+
+        pair = (teacher_id, school_id)
+        base = delivery_by_pair.get(pair, {})
+        engagement_item = engagement_by_pair.get(pair)
+        tlm_item = tlm_by_pair.get(pair)
+        teacher = None
+        if not base.get("para_teacher_code") or not base.get("para_teacher_name"):
+            teacher = db.get(User, teacher_id)
+
+        observations = {
+            "classroom_observations": 0,
+            "classroom_reports_pending": 0,
+            "classroom_reports_complete": 0,
+            "stem_inspections": 0,
+            "stem_reports_pending": 0,
+            "stem_reports_complete": 0,
+            **observation_counts.get((teacher_id, school_id), {}),
+        }
+
+        item = {
+            **base,
+            "para_teacher_id": teacher_id,
+            "para_teacher_code": (
+                base.get("para_teacher_code")
+                or (teacher.user_code if teacher is not None else None)
+            ),
+            "para_teacher_name": (
+                base.get("para_teacher_name")
+                or (teacher.full_name if teacher is not None else None)
+            ),
+            "school_id": school.id,
+            "school_code": school.school_code,
+            "school_name": school.school_name,
+            "engagement": engagement_item,
+            "tlm": tlm_item,
+            "observations": observations,
+        }
+        items.append(item)
+
+    items.sort(
+        key=lambda item: (
+            item["school_code"],
+            item["para_teacher_code"] or "",
+        )
+    )
+    return {
+        "items": items,
+        "total_para_teachers": len({item["para_teacher_id"] for item in items}),
+    }

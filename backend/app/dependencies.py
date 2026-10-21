@@ -86,7 +86,7 @@ def get_current_user(
         now + timedelta(minutes=SESSION_TIMEOUT_MINUTES)
     )
 
-    db.commit()
+    db.flush()
 
     return user
 

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models import Assessment, AssessmentImport, AssessmentImportRow, AssessmentResult
-
+from app.models.assessment import AssessmentClassDivision
+from app.models.student import Student
 
 def get_assessment_report(db: Session, assessment_id, authorized_school_ids) -> dict:
     query = db.query(Assessment).filter(
@@ -81,13 +81,57 @@ def get_assessment_report(db: Session, assessment_id, authorized_school_ids) -> 
 
     valid = len(results)
     average_marks = (
-        sum((result.aggregate_marks for result in results), 0) / valid
+        sum((result.aggregate_marks for result in results), Decimal("0")) / valid
         if valid else None
     )
     average_percentage = (
         float(average_marks / assessment.maximum_marks * 100)
         if average_marks is not None else None
     )
+
+    scope_division_ids = [
+        row[0]
+        for row in (
+            db.query(AssessmentClassDivision.class_division_id)
+            .filter(
+                AssessmentClassDivision.assessment_id == assessment.id
+            )
+            .all()
+        )
+    ]
+
+    eligible_students = None
+    missing_students = None
+    participation_percentage = None
+
+    # Historical assessments without recorded scope remain unknown.
+    if scope_division_ids:
+        eligible_student_ids = {
+            row[0]
+            for row in (
+                db.query(Student.id)
+                .filter(
+                    Student.class_division_id.in_(scope_division_ids),
+                    Student.status == "ACTIVE",
+                    Student.data_origin == "PRODUCTION",
+                )
+                .all()
+            )
+        }
+
+        eligible_students = len(eligible_student_ids)
+        submitted_student_ids = {
+            result.student_id
+            for result in results
+            if result.student_id in eligible_student_ids
+        }
+        missing_students = len(eligible_student_ids - submitted_student_ids)
+
+        if eligible_students:
+            participation_percentage = round(
+                len(submitted_student_ids) / eligible_students * 100,
+                2,
+            )
     return {
         "assessment_id": assessment.id,
         "academic_year_id": assessment.academic_year_id,
@@ -106,9 +150,9 @@ def get_assessment_report(db: Session, assessment_id, authorized_school_ids) -> 
         "unresolved_warning_rows": unresolved_warning_rows,
         "missing_import_students": missing_import_students,
         "unmatched_student_rows": unmatched_student_rows,
-        "eligible_students": None,
-        "missing_students": None,
-        "participation_percentage": None,
+        "eligible_students": eligible_students,
+        "missing_students": missing_students,
+        "participation_percentage": participation_percentage,
         "average_marks": average_marks,
         "average_percentage": round(average_percentage, 2) if average_percentage is not None else None,
         "results": [
@@ -164,19 +208,50 @@ def get_longitudinal_report(db: Session, assessment_id, authorized_school_ids) -
         .order_by(Assessment.sequence_no, Assessment.assessment_date, Assessment.id)
         .all()
     )
+
+    def summarize_midline(assessment):
+        results = (
+            db.query(AssessmentResult)
+            .filter(AssessmentResult.assessment_id == assessment.id)
+            .all()
+        )
+        count = len(results)
+        average_marks = (
+            sum(
+                (result.aggregate_marks for result in results),
+                Decimal("0"),
+            ) / count
+            if count else None
+        )
+        average_percentage = (
+            float(average_marks / assessment.maximum_marks * 100)
+            if average_marks is not None else None
+        )
+
+        return {
+            "assessment_id": assessment.id,
+            "sequence_no": assessment.sequence_no,
+            "name": assessment.name,
+            "assessment_date": assessment.assessment_date,
+            "maximum_marks": assessment.maximum_marks,
+            "status": assessment.status,
+            "valid_submitted_results": count,
+            "average_marks": (
+                round(float(average_marks), 2)
+                if average_marks is not None else None
+            ),
+            "average_percentage": (
+                round(average_percentage, 2)
+                if average_percentage is not None else None
+            ),
+        }
+
     if baseline is None or endline is None:
         return {
             "baseline_assessment_id": baseline.id if baseline else None,
             "endline_assessment_id": endline.id if endline else None,
             "midline_assessments": [
-                {
-                    "assessment_id": assessment.id,
-                    "sequence_no": assessment.sequence_no,
-                    "name": assessment.name,
-                    "assessment_date": assessment.assessment_date,
-                    "maximum_marks": assessment.maximum_marks,
-                    "status": assessment.status,
-                }
+                summarize_midline(assessment)
                 for assessment in midline_assessments
             ],
             "matched_students": 0,
@@ -228,14 +303,7 @@ def get_longitudinal_report(db: Session, assessment_id, authorized_school_ids) -
         "baseline_assessment_id": baseline.id,
         "endline_assessment_id": endline.id,
         "midline_assessments": [
-            {
-                "assessment_id": assessment.id,
-                "sequence_no": assessment.sequence_no,
-                "name": assessment.name,
-                "assessment_date": assessment.assessment_date,
-                "maximum_marks": assessment.maximum_marks,
-                "status": assessment.status,
-            }
+            summarize_midline(assessment)
             for assessment in midline_assessments
         ],
         "matched_students": len(rows),

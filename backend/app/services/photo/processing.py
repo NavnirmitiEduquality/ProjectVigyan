@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
 
 from PIL import Image, UnidentifiedImageError
@@ -73,6 +73,7 @@ class PhotoProcessingService:
             longitude=longitude,
         )
 
+
     @staticmethod
     def _validate_gps(
         latitude: Decimal,
@@ -81,10 +82,20 @@ class PhotoProcessingService:
         try:
             latitude = Decimal(str(latitude))
             longitude = Decimal(str(longitude))
-        except Exception as exc:
+        except (InvalidOperation, TypeError, ValueError) as exc:
             raise PhotoProcessingError(
                 "Latitude and longitude must be valid numbers."
             ) from exc
+
+        if not latitude.is_finite():
+            raise PhotoProcessingError(
+                "Latitude must be a finite number."
+            )
+
+        if not longitude.is_finite():
+            raise PhotoProcessingError(
+                "Longitude must be a finite number."
+            )
 
         if not MIN_LATITUDE <= latitude <= MAX_LATITUDE:
             raise PhotoProcessingError(

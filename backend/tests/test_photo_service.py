@@ -291,6 +291,37 @@ def test_create_photo_deletes_storage_when_db_flush_fails(
         db.close()
 
 
+def test_create_photo_cleanup_failure_preserves_db_exception(
+    photo_service: PhotoService,
+    monkeypatch,
+):
+    from unittest.mock import Mock
+
+    latitude, longitude = valid_gps()
+    db = Mock()
+    db.flush.side_effect = RuntimeError("simulated database failure")
+
+    def fail_delete(storage_key):
+        raise OSError("simulated storage cleanup failure")
+
+    monkeypatch.setattr(photo_service.storage, "delete", fail_delete)
+
+    with pytest.raises(
+        RuntimeError,
+        match="simulated database failure",
+    ):
+        photo_service.create_photo(
+            db,
+            make_jpeg(),
+            photo_category="SESSION_EVIDENCE",
+            captured_at=capture_time(),
+            latitude=latitude,
+            longitude=longitude,
+        )
+
+    db.add.assert_called_once()
+    db.flush.assert_called_once()
+
 def test_invalid_photo_never_reaches_storage(
     photo_service: PhotoService,
 ):

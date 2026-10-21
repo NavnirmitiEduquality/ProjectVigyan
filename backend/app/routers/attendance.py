@@ -266,7 +266,11 @@ def save_attendance(
             )
         )
 
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     return _build_response(
         teaching_session,

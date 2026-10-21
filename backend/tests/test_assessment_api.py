@@ -227,6 +227,11 @@ def assessment_api_setup():
         db.delete(manager_role)
         db.delete(viewer_role)
         db.delete(year)
+        db.query(Student).filter(
+            Student.class_division_id == division.id,
+            Student.data_origin == "PRODUCTION",
+            Student.student_code.like("AA-PROD-%"),
+        ).delete(synchronize_session=False)
         db.delete(student)
         db.delete(second_student)
         db.delete(other_student)
@@ -251,7 +256,7 @@ def headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def create_assessment(context, token: str, school_id=None):
+def create_assessment(context, token: str, school_id=None, *, configure_scope=True):
     response = client.post(
         "/api/v1/assessments",
         headers=headers(token),
@@ -260,6 +265,31 @@ def create_assessment(context, token: str, school_id=None):
             "school_id": str(school_id or context["school"].id),
             "assessment_type": "BASELINE",
             "maximum_marks": "20",
+        },
+    )
+    if (
+        configure_scope
+        and response.status_code == 201
+        and (school_id is None or school_id == context["school"].id)
+    ):
+        scope_response = set_assessment_scope(context, token, response.json()["id"])
+        assert scope_response.status_code == 200, scope_response.text
+    return response
+
+
+def set_assessment_scope(context, token, assessment_id, division_ids=None):
+    response = client.put(
+        f"/api/v1/assessments/{assessment_id}/scope",
+        headers=headers(token),
+        json={
+            "class_division_ids": [
+                str(item)
+                for item in (
+                    division_ids
+                    if division_ids is not None
+                    else [context["division"].id]
+                )
+            ]
         },
     )
     return response
@@ -284,6 +314,21 @@ def standard_row(context, student, marks="10"):
     }
 
 
+def add_production_roster_student(context):
+    student = Student(
+        student_code=f"AA-PROD-{uuid4().hex[:10]}",
+        full_name="Production Roster Student",
+        gender="OTHER",
+        roll_no=3,
+        class_division_id=context["division"].id,
+        status="ACTIVE",
+        data_origin="PRODUCTION",
+    )
+    context["db"].add(student)
+    context["db"].flush()
+    return student
+
+
 def test_unauthenticated_and_read_only_access(assessment_api_setup):
     context = assessment_api_setup
     assert client.get("/api/v1/assessments").status_code == 401
@@ -297,6 +342,8 @@ def test_unauthenticated_and_read_only_access(assessment_api_setup):
 
 def test_manager_workflow_acknowledges_missing_warning_and_locks(assessment_api_setup):
     context = assessment_api_setup
+    production_student = add_production_roster_student(context)
+    context["db"].commit()
     token = login(context["manager"])
     viewer_token = login(context["viewer"])
     created = create_assessment(context, token)
@@ -425,6 +472,8 @@ def test_complete_roster_has_no_missing_student_warning(assessment_api_setup):
 
 def test_partial_roster_generates_missing_student_warning(assessment_api_setup):
     context = assessment_api_setup
+    production_student = add_production_roster_student(context)
+    context["db"].commit()
     token = login(context["manager"])
 
     created = create_assessment(context, token)
@@ -464,6 +513,8 @@ def test_acknowledged_missing_student_is_not_inserted_as_result(
     assessment_api_setup,
 ):
     context = assessment_api_setup
+    production_student = add_production_roster_student(context)
+    context["db"].commit()
     token = login(context["manager"])
 
     created = create_assessment(context, token)
@@ -933,3 +984,17 @@ def test_user_cannot_read_other_school_assessment(assessment_api_setup):
     )
 
     assert response.status_code == 403
+
+
+def test_import_requires_explicit_assessment_scope(assessment_api_setup):
+    context = assessment_api_setup
+    token = login(context["manager"])
+    created = create_assessment(context, token, configure_scope=False)
+    assert created.status_code == 201, created.text
+    imported = import_rows(
+        context,
+        token,
+        created.json()["id"],
+        [standard_row(context, context["student"], "10")],
+    )
+    assert imported.status_code == 400, imported.text

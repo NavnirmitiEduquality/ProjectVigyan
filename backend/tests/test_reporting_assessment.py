@@ -7,6 +7,7 @@ from app.models import (
     AssessmentImportRow,
     AssessmentResult,
     User,
+    AssessmentClassDivision,
 )
 from app.services.reporting.assessment import (
     get_assessment_report,
@@ -57,6 +58,45 @@ def test_assessment_longitudinal_surfaces_multiple_midlines(domain_fixture):
     db.add_all([midline_one, midline_two])
     db.flush()
 
+    students = [
+        fixture["student_one"],
+        db.query(type(fixture["student_one"]))
+        .filter(
+            type(fixture["student_one"]).class_division_id
+            == fixture["division_one"].id
+        )
+        .filter(
+            type(fixture["student_one"]).id
+            != fixture["student_one"].id
+        )
+        .order_by(type(fixture["student_one"]).roll_no)
+        .first(),
+    ]
+
+    db.add_all(
+        [
+            AssessmentResult(
+                assessment_id=midline_one.id,
+                student_id=students[0].id,
+                student_business_id=students[0].student_code,
+                aggregate_marks=15,
+            ),
+            AssessmentResult(
+                assessment_id=midline_one.id,
+                student_id=students[1].id,
+                student_business_id=students[1].student_code,
+                aggregate_marks=20,
+            ),
+            AssessmentResult(
+                assessment_id=midline_two.id,
+                student_id=students[0].id,
+                student_business_id=students[0].student_code,
+                aggregate_marks=24,
+            ),
+        ]
+    )
+    db.flush()
+
     try:
         report = get_longitudinal_report(
             db,
@@ -78,6 +118,13 @@ def test_assessment_longitudinal_surfaces_multiple_midlines(domain_fixture):
 
         assert midlines[0]["assessment_id"] == midline_one.id
         assert midlines[1]["assessment_id"] == midline_two.id
+        assert midlines[0]["valid_submitted_results"] == 2
+        assert midlines[0]["average_marks"] == 17.5
+        assert midlines[0]["average_percentage"] == 70.0
+
+        assert midlines[1]["valid_submitted_results"] == 1
+        assert midlines[1]["average_marks"] == 24.0
+        assert midlines[1]["average_percentage"] == 80.0
 
         # Existing Baseline → Endline longitudinal calculation is unchanged.
         assert report["matched_students"] == 2
@@ -286,3 +333,29 @@ def test_longitudinal_endpoint_blocks_other_school(
     finally:
         db.delete(other_assessment)
         db.commit()
+
+def test_assessment_report_calculates_participation_from_saved_scope(
+    domain_fixture,
+):
+    fixture = domain_fixture
+    db = fixture["db"]
+    assessment = fixture["assessments"][0]
+    division = fixture["division_one"]
+
+    db.add(
+        AssessmentClassDivision(
+            assessment_id=assessment.id,
+            class_division_id=division.id,
+        )
+    )
+    db.flush()
+
+    report = get_assessment_report(
+        db,
+        assessment.id,
+        [fixture["school_one"].id],
+    )
+
+    assert report["eligible_students"] == 2
+    assert report["missing_students"] == 0
+    assert report["participation_percentage"] == 100.0

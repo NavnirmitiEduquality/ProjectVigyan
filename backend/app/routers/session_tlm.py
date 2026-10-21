@@ -324,18 +324,22 @@ def _compensate_failed_transaction(
     db: Session,
     service: SessionTLMService,
     operation,
+    *,
+    committed: bool = False,
 ) -> None:
     """
-    Roll back the database transaction and remove any newly-created
-    physical photo objects.
+    Roll back the database transaction and remove newly-created
+    physical photo objects only if the commit did not succeed.
     """
-
     db.rollback()
 
-    if operation is not None:
-        service.compensate_new_storage(
-            operation.new_storage_keys,
-        )
+    if committed or operation is None:
+        return
+
+    service.compensate_new_storage(
+        operation.new_storage_keys,
+    )
+
 
 
 # ------------------------------------------------------------------
@@ -460,6 +464,7 @@ def create_session_tlm(
     )
 
     operation = None
+    committed = False
 
     try:
         operation = service.create(
@@ -472,6 +477,7 @@ def create_session_tlm(
         )
 
         db.commit()
+        committed = True
         db.refresh(operation.session_tlm)
 
     except (
@@ -490,6 +496,7 @@ def create_session_tlm(
             db,
             service,
             operation,
+            committed=committed,
         )
         _raise_service_http_error(exc)
 
@@ -498,6 +505,7 @@ def create_session_tlm(
             db,
             service,
             operation,
+            committed=committed,
         )
 
         raise HTTPException(
@@ -510,6 +518,7 @@ def create_session_tlm(
             db,
             service,
             operation,
+            committed=committed,
         )
         raise
 
@@ -577,6 +586,7 @@ def update_session_tlm(
     )
 
     operation = None
+    committed = False
 
     try:
         operation = service.update(
@@ -590,6 +600,7 @@ def update_session_tlm(
         )
 
         db.commit()
+        committed = True
         db.refresh(operation.session_tlm)
 
     except (
@@ -608,6 +619,7 @@ def update_session_tlm(
             db,
             service,
             operation,
+            committed=committed,
         )
         _raise_service_http_error(exc)
 
@@ -616,6 +628,7 @@ def update_session_tlm(
             db,
             service,
             operation,
+            committed=committed,
         )
 
         raise HTTPException(
@@ -628,6 +641,7 @@ def update_session_tlm(
             db,
             service,
             operation,
+            committed=committed,
         )
         raise
 

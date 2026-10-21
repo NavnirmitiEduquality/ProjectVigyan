@@ -107,7 +107,11 @@ class PhotoService:
             db.add(photo)
             db.flush()
         except Exception:
-            self.storage.delete(stored_photo.storage_key)
+            try:
+                self.storage.delete(stored_photo.storage_key)
+            except Exception:
+                # Preserve the original database exception.
+                pass
             raise
 
         return photo

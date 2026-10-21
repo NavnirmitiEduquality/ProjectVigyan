@@ -209,7 +209,7 @@ def get_tlm_by_name(name: str) -> TLM:
 
 
 def get_active_tlm(
-    exclude_names: tuple[str, ...] = (),
+    exclude_names: tuple[str, ...] = ("NA - No TLM Used",),
 ) -> TLM:
     db = SessionLocal()
 

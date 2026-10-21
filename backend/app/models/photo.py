@@ -106,7 +106,8 @@ class Photo(Base):
     __table_args__ = (
         CheckConstraint(
             "photo_category IN "
-            "('SESSION_EVIDENCE', 'TLM_ACTIVITY', 'STEM_INSPECTION')",
+            "('SESSION_EVIDENCE', 'TLM_ACTIVITY', "
+            "'STEM_INSPECTION', 'CLASSROOM_OBSERVATION')",
             name="ck_photo_category",
         ),
         CheckConstraint(

@@ -21,6 +21,17 @@ from app.models.assessment import (
     AssessmentImport,
     AssessmentImportRow,
     AssessmentResult,
+    AssessmentClassDivision,
+)
+from app.models.observation import (
+    ClassroomObservation,
+    ClassroomObservationReport,
+    ObservationReportCorrection,
+    PendingReportNotification,
+    STEMInspection,
+    STEMInspectionReport,
+    SchoolTeacher,
+    SchoolTeacherSubject,
 )
 
 __all__ = [
@@ -50,4 +61,13 @@ __all__ = [
     "AssessmentImport",
     "AssessmentImportRow",
     "AssessmentResult",
+    "AssessmentClassDivision",
+    "SchoolTeacher",
+    "SchoolTeacherSubject",
+    "ClassroomObservation",
+    "STEMInspection",
+    "ClassroomObservationReport",
+    "STEMInspectionReport",
+    "ObservationReportCorrection",
+    "PendingReportNotification",
 ]

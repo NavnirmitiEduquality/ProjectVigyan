@@ -142,6 +142,46 @@ def test_invalid_longitude_is_rejected(service, longitude):
 @pytest.mark.parametrize(
     "latitude",
     [
+        Decimal("NaN"),
+        Decimal("Infinity"),
+        Decimal("-Infinity"),
+    ],
+)
+def test_non_finite_latitude_is_rejected(service, latitude):
+    _, longitude = valid_gps()
+
+    with pytest.raises(PhotoProcessingError, match="finite"):
+        service.process(
+            make_jpeg(),
+            captured_at=capture_time(),
+            latitude=latitude,
+            longitude=longitude,
+        )
+
+
+@pytest.mark.parametrize(
+    "longitude",
+    [
+        Decimal("NaN"),
+        Decimal("Infinity"),
+        Decimal("-Infinity"),
+    ],
+)
+def test_non_finite_longitude_is_rejected(service, longitude):
+    latitude, _ = valid_gps()
+
+    with pytest.raises(PhotoProcessingError, match="finite"):
+        service.process(
+            make_jpeg(),
+            captured_at=capture_time(),
+            latitude=latitude,
+            longitude=longitude,
+        )
+
+
+@pytest.mark.parametrize(
+    "latitude",
+    [
         Decimal("-90"),
         Decimal("90"),
     ],

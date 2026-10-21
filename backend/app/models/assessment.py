@@ -6,6 +6,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Date,
+    Index,
     DateTime,
     ForeignKey,
     Integer,
@@ -38,6 +39,15 @@ class Assessment(Base):
     assessment_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     maximum_marks: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="DRAFT", server_default="DRAFT")
+    submitted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    submitted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     data_origin: Mapped[str] = mapped_column(String(20), nullable=False, default="PRODUCTION", server_default="PRODUCTION")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
@@ -47,6 +57,11 @@ class Assessment(Base):
 
     imports = relationship("AssessmentImport", back_populates="assessment", cascade="all, delete-orphan")
     results = relationship("AssessmentResult", back_populates="assessment")
+    class_division_scopes = relationship(
+        "AssessmentClassDivision",
+        back_populates="assessment",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         UniqueConstraint(
@@ -70,6 +85,42 @@ class Assessment(Base):
         CheckConstraint(
             "data_origin IN ('PRODUCTION', 'DEMO', 'TEST')",
             name="ck_assessment_data_origin",
+        ),
+    )
+
+
+class AssessmentClassDivision(Base):
+    __tablename__ = "assessment_class_divisions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    assessment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assessments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    class_division_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("class_divisions.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    assessment = relationship("Assessment", back_populates="class_division_scopes")
+    class_division = relationship("ClassDivision")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "assessment_id",
+            "class_division_id",
+            name="uq_assessment_class_division_scope",
         ),
     )
 

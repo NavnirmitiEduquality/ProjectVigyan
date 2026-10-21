@@ -29,6 +29,18 @@ def get_tlm_report(db: Session, filters: ReportingFilters, *, group_by: str = "p
     elif group_by == "para_teacher":
         query = query.join(User, User.id == TeachingSession.para_teacher_id).filter(User.data_origin == "PRODUCTION")
         group_columns = (TeachingSession.para_teacher_id.label("para_teacher_id"), User.user_code.label("para_teacher_code"), User.full_name.label("para_teacher_name"))
+    elif group_by == "para_teacher_school":
+        query = query.join(
+            User, User.id == TeachingSession.para_teacher_id
+        ).filter(User.data_origin == "PRODUCTION")
+        group_columns = (
+            TeachingSession.para_teacher_id.label("para_teacher_id"),
+            User.user_code.label("para_teacher_code"),
+            User.full_name.label("para_teacher_name"),
+            ClassDivision.school_id.label("school_id"),
+            School.school_code.label("school_code"),
+            School.school_name.label("school_name"),
+        )
     elif group_by != "project":
         raise ValueError("Unsupported TLM grouping.")
     normal_record = SessionTLM.id.is_not(None) & (TLM.name != NA_TLM_NAME)

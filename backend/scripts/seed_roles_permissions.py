@@ -142,6 +142,17 @@ PERMISSIONS = [
     ("View Reports", "report.view", "report"),
     ("Export Reports", "report.export", "report"),
 
+    # Classroom observations and STEM inspections
+    ("View Classroom Observations", "classroom_observation.view", "classroom_observation"),
+    ("Create Classroom Observations", "classroom_observation.create", "classroom_observation"),
+    ("Submit Classroom Observation Reports", "classroom_observation.report.submit", "classroom_observation"),
+    ("View STEM Inspections", "stem_inspection.view", "stem_inspection"),
+    ("Create STEM Inspections", "stem_inspection.create", "stem_inspection"),
+    ("Submit STEM Inspection Reports", "stem_inspection.report.submit", "stem_inspection"),
+    ("Manage School Teachers", "school_teacher.manage", "school_teacher"),
+    ("Correct Observation Reports", "observation_report.admin_correction", "observation_report"),
+    ("View Pending Report Notifications", "observation_notification.view", "observation_notification"),
+
     # Audit
     ("View Audit Logs", "audit.view", "audit"),
 
@@ -212,6 +223,15 @@ ROLE_PERMISSIONS = {
         "feedback.create",
         "report.view",
         "report.export",
+        "classroom_observation.view",
+        "classroom_observation.create",
+        "classroom_observation.report.submit",
+        "stem_inspection.view",
+        "stem_inspection.create",
+        "stem_inspection.report.submit",
+        "school_teacher.manage",
+        "observation_report.admin_correction",
+        "observation_notification.view",
         "audit.view",
         "change_request.create",
         "change_request.view",
@@ -231,6 +251,7 @@ ROLE_PERMISSIONS = {
         "student.update",
         "student.import",
         "calendar.view",
+        "calendar.manage",
         "session.view",
         "session.create",
         "session.update",
@@ -258,6 +279,10 @@ ROLE_PERMISSIONS = {
         "feedback.view",
         "report.view",
         "report.export",
+        "classroom_observation.view",
+        "stem_inspection.view",
+        "school_teacher.manage",
+        "observation_notification.view",
         "change_request.create",
         "change_request.view",
     },
@@ -279,6 +304,9 @@ ROLE_PERMISSIONS = {
         "feedback.view",
         "report.view",
         "report.export",
+        "classroom_observation.view",
+        "stem_inspection.view",
+        "observation_notification.view",
     },
 
     "STEM_COORDINATOR": {
@@ -299,6 +327,11 @@ ROLE_PERMISSIONS = {
         "feedback.view",
         "feedback.create",
         "report.view",
+        "classroom_observation.view",
+        "stem_inspection.view",
+        "stem_inspection.create",
+        "stem_inspection.report.submit",
+        "observation_notification.view",
     },
 
     "PARA_TEACHER": {
@@ -329,6 +362,10 @@ ROLE_PERMISSIONS = {
         "evidence.capture",
         "feedback.view",
         "feedback.create",
+        "classroom_observation.view",
+        "classroom_observation.create",
+        "classroom_observation.report.submit",
+        "observation_notification.view",
     },
 }
 

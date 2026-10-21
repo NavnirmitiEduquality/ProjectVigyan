@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.models import (
     AcademicYear,
     Assessment,
+    AssessmentClassDivision,
     AssessmentImport,
     AssessmentImportRow,
     AssessmentResult,
@@ -13,6 +14,7 @@ from app.models import (
     School,
     Student,
 )
+from datetime import datetime, timezone
 
 
 class AssessmentDomainError(Exception):
@@ -158,6 +160,99 @@ class AssessmentService:
 
         return assessment
 
+    def set_scope(
+        self,
+        *,
+        assessment_id: UUID,
+        class_division_ids: list[UUID],
+    ) -> Assessment:
+        assessment = self._get_assessment(assessment_id)
+        self._ensure_editable(assessment)
+
+        if not class_division_ids:
+            raise AssessmentValidationError(
+                "At least one class/division must be selected."
+            )
+
+        if len(class_division_ids) != len(set(class_division_ids)):
+            raise AssessmentValidationError(
+                "Duplicate class/division IDs are not allowed."
+            )
+
+        divisions = (
+            self.db.query(ClassDivision)
+            .filter(
+                ClassDivision.id.in_(class_division_ids),
+                ClassDivision.school_id == assessment.school_id,
+                ClassDivision.status == "ACTIVE",
+            )
+            .all()
+        )
+
+        if len(divisions) != len(class_division_ids):
+            raise AssessmentValidationError(
+                "Every selected class/division must be active and belong "
+                "to the assessment's school."
+            )
+
+        existing_scopes = (
+            self.db.query(AssessmentClassDivision)
+            .filter(
+                AssessmentClassDivision.assessment_id == assessment.id
+            )
+            .all()
+        )
+        existing_ids = {
+            scope.class_division_id for scope in existing_scopes
+        }
+        requested_ids = set(class_division_ids)
+
+        if existing_ids == requested_ids:
+            return assessment
+
+        # A changed scope invalidates every previous draft import.
+        # Keep the rows for traceability, but make them unsubmitable.
+        draft_imports = (
+            self.db.query(AssessmentImport)
+            .filter(AssessmentImport.assessment_id == assessment.id)
+            .all()
+        )
+
+        for import_record in draft_imports:
+            if import_record.status == "SUBMITTED":
+                raise AssessmentLockedError(
+                    "Submitted assessment imports cannot be re-scoped."
+                )
+
+            for row in import_record.rows:
+                row.validation_status = "ERROR"
+                row.validation_message = (
+                    "Assessment scope changed; re-import and validate "
+                    "the results under the new scope."
+                )
+                row.warning_acknowledged = False
+
+            import_record.error_count = len(import_record.rows)
+            import_record.warning_count = 0
+            import_record.status = "DRAFT"
+
+        for scope in existing_scopes:
+            self.db.delete(scope)
+
+        self.db.flush()
+
+        for class_division_id in class_division_ids:
+            self.db.add(
+                AssessmentClassDivision(
+                    assessment_id=assessment.id,
+                    class_division_id=class_division_id,
+                )
+            )
+
+        assessment.status = "DRAFT"
+        self.db.flush()
+        return assessment
+
     # ------------------------------------------------------------------
     # Import / validation
     # ------------------------------------------------------------------
@@ -172,6 +267,14 @@ class AssessmentService:
         assessment = self._get_assessment(assessment_id)
         self._ensure_editable(assessment)
 
+        if not assessment.class_division_scopes:
+            raise AssessmentValidationError(
+                "Set the assessment class/division scope before importing."
+            )
+        scoped_division_ids = {
+            scope.class_division_id
+            for scope in assessment.class_division_scopes
+        }
         if not rows:
             raise AssessmentValidationError(
                 "At least one import row is required."
@@ -187,7 +290,6 @@ class AssessmentService:
         self.db.flush()
 
         seen_codes: set[str] = set()
-        imported_class_divisions: set[UUID] = set()
 
         for row_number, raw_row in enumerate(rows, start=1):
             if not isinstance(raw_row, dict):
@@ -222,6 +324,7 @@ class AssessmentService:
             # This is also used later for missing-student reconciliation.
             # ----------------------------------------------------------
 
+            class_division = None
             if source_class and source_division and source_class.isdigit():
                 class_division = (
                     self.db.query(ClassDivision)
@@ -232,9 +335,6 @@ class AssessmentService:
                     )
                     .first()
                 )
-
-                if class_division:
-                    imported_class_divisions.add(class_division.id)
 
             # ----------------------------------------------------------
             # Student identity / mapping validation
@@ -295,9 +395,6 @@ class AssessmentService:
                 elif student:
                     validation_status = "VALID"
                     is_mapped = True
-                    imported_class_divisions.add(
-                        student.class_division_id
-                    )
 
                 else:
                     # Unknown/unmatched student is a warning because
@@ -337,6 +434,25 @@ class AssessmentService:
                 )
                 validation_status = "ERROR"
 
+            resolved_division_id = (
+                student.class_division_id
+                if student is not None
+                else (
+                    class_division.id
+                    if class_division is not None
+                    else None
+                )
+            )
+
+            if (
+                resolved_division_id is not None
+                and resolved_division_id not in scoped_division_ids
+            ):
+                message = (
+                    "Import row is outside the selected assessment scope."
+                )
+                validation_status = "ERROR"
+                is_mapped = False
             import_row = AssessmentImportRow(
                 assessment_import_id=import_record.id,
                 row_number=row_number,
@@ -345,12 +461,10 @@ class AssessmentService:
                 source_class=source_class,
                 source_division=source_division,
                 aggregate_marks=marks,
-                student_id=student.id if student else None,
-                class_division_id=(
-                    student.class_division_id
-                    if student
-                    else None
+                student_id=(
+                    student.id if student is not None and is_mapped else None
                 ),
+                class_division_id=resolved_division_id,
                 validation_status=validation_status,
                 validation_message=message,
                 is_mapped=is_mapped,
@@ -370,15 +484,14 @@ class AssessmentService:
         # Missing-student reconciliation
         #
         # IMPORTANT:
-        # We reconcile the class/divisions represented by the import.
-        # We do NOT assume the entire school is the assessment scope,
-        # because the current model does not contain an explicit
-        # assessment-scope field.
+        # Reconcile every selected division, including divisions with
+        # zero imported rows. The explicit assessment scope defines
+        # the expected active-student roster.
         # --------------------------------------------------------------
 
         next_row_number = len(import_record.rows) + 1
 
-        for class_division_id in imported_class_divisions:
+        for class_division_id in scoped_division_ids:
             imported_student_ids = {
                 row.student_id
                 for row in import_record.rows
@@ -393,6 +506,7 @@ class AssessmentService:
                 .filter(
                     Student.class_division_id == class_division_id,
                     Student.status == "ACTIVE",
+                    Student.data_origin == "PRODUCTION",
                 )
             )
 
@@ -474,6 +588,11 @@ class AssessmentService:
 
         assessment = row.assessment_import.assessment
         self._ensure_editable(assessment)
+        if row.assessment_import.status != "VALIDATED":
+            raise AssessmentValidationError(
+                "This import is no longer editable. Re-import and validate "
+                "the results under the current assessment scope."
+            )
 
         student = self.db.get(Student, student_id)
 
@@ -485,6 +604,20 @@ class AssessmentService:
         if student.class_division.school_id != assessment.school_id:
             raise AssessmentValidationError(
                 "Student is not enrolled in the assessment school."
+            )
+        scoped_division_ids = {
+            scope.class_division_id
+            for scope in assessment.class_division_scopes
+        }
+
+        if not scoped_division_ids:
+            raise AssessmentValidationError(
+                "Set the assessment class/division scope before mapping."
+            )
+
+        if student.class_division_id not in scoped_division_ids:
+            raise AssessmentValidationError(
+                "Student is outside the selected assessment scope."
             )
 
         if (
@@ -569,6 +702,11 @@ class AssessmentService:
             row.assessment_import.assessment
         )
 
+        if row.assessment_import.status != "VALIDATED":
+            raise AssessmentValidationError(
+                "This import is no longer editable. Re-import and validate "
+                "the results under the current assessment scope."
+            )
         if row.validation_status != "WARNING":
             raise AssessmentValidationError(
                 "Only warning rows can be acknowledged."
@@ -606,6 +744,11 @@ class AssessmentService:
 
         assessment = row.assessment_import.assessment
         self._ensure_editable(assessment)
+        if row.assessment_import.status != "VALIDATED":
+            raise AssessmentValidationError(
+                "This import is no longer editable. Re-import and validate "
+                "the results under the current assessment scope."
+            )
 
         try:
             aggregate_marks = Decimal(str(aggregate_marks))
@@ -649,14 +792,25 @@ class AssessmentService:
     # Submission
     # ------------------------------------------------------------------
 
-    def submit(self, *, assessment_id: UUID) -> Assessment:
+    def submit(
+        self,
+        *,
+        assessment_id: UUID,
+        submitted_by_user_id: UUID,
+    ) -> Assessment:
         assessment = self._get_assessment(assessment_id)
         self._ensure_editable(assessment)
-
+        if not assessment.class_division_scopes:
+            raise AssessmentValidationError(
+                "Set the assessment class/division scope before submission."
+            )
         import_record = (
             self.db.query(AssessmentImport)
             .filter(AssessmentImport.assessment_id == assessment.id)
-            .order_by(AssessmentImport.created_at.desc())
+            .order_by(
+                AssessmentImport.created_at.desc(),
+                AssessmentImport.id.desc(),
+            )
             .first()
         )
 
@@ -664,8 +818,20 @@ class AssessmentService:
             raise AssessmentValidationError(
                 "An import is required before submission."
             )
-
+        if import_record.status != "VALIDATED":
+            raise AssessmentValidationError(
+                "The latest import must be validated before submission."
+            )
         self._refresh_import_counts(import_record)
+        scoped_division_ids = {
+            scope.class_division_id
+            for scope in assessment.class_division_scopes
+        }
+
+        if not scoped_division_ids:
+            raise AssessmentValidationError(
+                "Set the assessment class/division scope before submission."
+            )
 
         # --------------------------------------------------------------
         # 1. Validate blocking import rows
@@ -677,6 +843,12 @@ class AssessmentService:
             if row.validation_status == "ERROR":
                 blocking.append(row)
                 continue
+
+            if row.class_division_id not in scoped_division_ids:
+                raise AssessmentValidationError(
+                    "Mapped import rows must belong to the selected "
+                    "assessment scope."
+                )
 
             # An unmapped row blocks submission unless it is specifically
             # an acknowledged "missing from import" warning.
@@ -789,6 +961,8 @@ class AssessmentService:
                 )
             )
 
+        assessment.submitted_by_user_id = submitted_by_user_id
+        assessment.submitted_at = datetime.now(timezone.utc)
         assessment.status = "SUBMITTED"
         import_record.status = "SUBMITTED"
 

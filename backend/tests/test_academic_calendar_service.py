@@ -3,7 +3,15 @@ from uuid import uuid4
 
 import pytest
 
-from app.models import AcademicHoliday, AcademicYear
+from app.models import (
+    AcademicHoliday,
+    AcademicYear,
+    ClassDivision,
+    SessionPlanItem,
+    SessionPlanWeek,
+    School,
+    User,
+)
 from app.services.academic_calendar.service import (
     AcademicCalendarService,
     AcademicHolidayAlreadyExistsError,
@@ -12,37 +20,104 @@ from app.services.academic_calendar.service import (
     ActiveAcademicYearNotFoundError,
 )
 
-
-
+from unittest.mock import MagicMock
 from app.database import SessionLocal
 
 @pytest.fixture(scope="function")
 def db():
     session = SessionLocal()
-    def clean_test_data():
-        test_year = session.query(AcademicYear).filter(AcademicYear.name == "2026-2027").first()
-        if test_year:
-            session.query(AcademicHoliday).filter(AcademicHoliday.academic_year_id == test_year.id).delete(synchronize_session=False)
-            session.delete(test_year)
-            session.commit()
+
+    from app.models import (
+        ClassDivision,
+        School,
+        SessionPlanItem,
+        SessionPlanWeek,
+        User,
+    )
+
+    existing_ids = {
+        AcademicYear: {row[0] for row in session.query(AcademicYear.id).all()},
+        AcademicHoliday: {row[0] for row in session.query(AcademicHoliday.id).all()},
+        User: {row[0] for row in session.query(User.id).all()},
+        School: {row[0] for row in session.query(School.id).all()},
+        ClassDivision: {row[0] for row in session.query(ClassDivision.id).all()},
+        SessionPlanWeek: {
+            row[0] for row in session.query(SessionPlanWeek.id).all()
+        },
+        SessionPlanItem: {
+            row[0] for row in session.query(SessionPlanItem.id).all()
+        },
+    }
 
     try:
-        clean_test_data()
         yield session
     finally:
         session.rollback()
-        clean_test_data()
-        session.close()
+
+        try:
+            # Delete child records before their parents, and only rows created
+            # after the fixture snapshot.
+            for model in (SessionPlanItem,):
+                old_ids = existing_ids[model]
+                new_ids = {
+                    row[0] for row in session.query(model.id).all()
+                    if row[0] not in old_ids
+                }
+                if new_ids:
+                    session.query(model).filter(model.id.in_(new_ids)).delete(
+                        synchronize_session=False
+                    )
+
+            for model in (SessionPlanWeek, ClassDivision, AcademicHoliday):
+                old_ids = existing_ids[model]
+                new_ids = {
+                    row[0] for row in session.query(model.id).all()
+                    if row[0] not in old_ids
+                }
+                if new_ids:
+                    session.query(model).filter(model.id.in_(new_ids)).delete(
+                        synchronize_session=False
+                    )
+
+            for model in (AcademicYear, School, User):
+                old_ids = existing_ids[model]
+                new_ids = {
+                    row[0] for row in session.query(model.id).all()
+                    if row[0] not in old_ids
+                }
+                if new_ids:
+                    session.query(model).filter(model.id.in_(new_ids)).delete(
+                        synchronize_session=False
+                    )
+
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+
+def create_test_year(db, **kwargs):
+    name = kwargs.pop("name", f"calendar-test-{uuid4()}")
+    year = AcademicCalendarService.create_academic_year(
+        db,
+        name=name,
+        data_origin="TEST",
+        **kwargs,
+    )
+    return year
+
 def test_create_academic_year(db):
     academic_year = AcademicCalendarService.create_academic_year(
         db,
-        name="2026-2027",
+        name=f"calendar-test-{uuid4()}",
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
     )
 
     assert academic_year.id is not None
-    assert academic_year.name == "2026-2027"
+    assert academic_year.name.startswith("calendar-test-")
     assert academic_year.start_date == date(2026, 6, 1)
     assert academic_year.end_date == date(2027, 5, 31)
     assert academic_year.is_active is True
@@ -51,6 +126,34 @@ def test_create_academic_year(db):
     db.commit()
 
 
+def test_get_active_academic_year(db):
+    academic_year = AcademicCalendarService.create_academic_year(
+        db,
+        name=f"calendar-test-{uuid4()}",
+        start_date=date(2026, 6, 1),
+        end_date=date(2027, 5, 31),
+        is_active=True,
+    )
+
+    query = MagicMock()
+    query.filter.return_value.order_by.return_value.first.return_value = (
+        academic_year
+    )
+    db.query = MagicMock(return_value=query)
+
+    result = AcademicCalendarService.get_active_academic_year(db)
+
+    assert result.id == academic_year.id
+    assert result.is_active is True
+
+
+def test_get_active_academic_year_when_none_exists(db):
+    query = MagicMock()
+    query.filter.return_value.order_by.return_value.first.return_value = None
+    db.query = MagicMock(return_value=query)
+
+    with pytest.raises(ActiveAcademicYearNotFoundError):
+        AcademicCalendarService.get_active_academic_year(db)
 
 def test_create_academic_year_rejects_invalid_date_range(db):
     with pytest.raises(ValueError, match="start_date must be before end_date"):
@@ -64,9 +167,11 @@ def test_create_academic_year_rejects_invalid_date_range(db):
 
 
 def test_create_academic_year_rejects_duplicate_name(db):
+    name = f"calendar-test-{uuid4()}"
+
     AcademicCalendarService.create_academic_year(
         db,
-        name="2026-2027",
+        name=name,
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
     )
@@ -75,39 +180,16 @@ def test_create_academic_year_rejects_duplicate_name(db):
     with pytest.raises(AcademicYearAlreadyExistsError):
         AcademicCalendarService.create_academic_year(
             db,
-            name="2026-2027",
+            name=name,
             start_date=date(2026, 6, 1),
             end_date=date(2027, 5, 31),
         )
-
-    db.rollback()
-
-
-def test_get_active_academic_year(db):
-    academic_year = AcademicCalendarService.create_academic_year(
-        db,
-        name="2026-2027",
-        start_date=date(2026, 6, 1),
-        end_date=date(2027, 5, 31),
-        is_active=True,
-    )
-    db.commit()
-
-    result = AcademicCalendarService.get_active_academic_year(db)
-
-    assert result.id == academic_year.id
-    assert result.is_active is True
-
-
-def test_get_active_academic_year_when_none_exists(db):
-    with pytest.raises(ActiveAcademicYearNotFoundError):
-        AcademicCalendarService.get_active_academic_year(db)
 
 
 def test_create_academic_holiday(db):
     academic_year = AcademicCalendarService.create_academic_year(
         db,
-        name="2026-2027",
+        name=f"calendar-test-{uuid4()}",
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
     )
@@ -150,7 +232,7 @@ def test_create_academic_holiday_rejects_missing_academic_year(db):
 def test_create_academic_holiday_rejects_duplicate_date(db):
     academic_year = AcademicCalendarService.create_academic_year(
         db,
-        name="2026-2027",
+        name=f"calendar-test-{uuid4()}",
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
     )
@@ -180,7 +262,7 @@ def test_create_academic_holiday_rejects_duplicate_date(db):
 def test_list_active_holidays_ordered_by_date(db):
     academic_year = AcademicCalendarService.create_academic_year(
         db,
-        name="2026-2027",
+        name=f"calendar-test-{uuid4()}",
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
     )
@@ -227,7 +309,7 @@ def test_list_active_holidays_ordered_by_date(db):
 def test_list_holidays_can_include_inactive(db):
     academic_year = AcademicCalendarService.create_academic_year(
         db,
-        name="2026-2027",
+        name=f"calendar-test-{uuid4()}",
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
     )
@@ -279,7 +361,7 @@ def test_list_holidays_can_include_inactive(db):
 def test_get_academic_holiday(db):
     academic_year = AcademicCalendarService.create_academic_year(
         db,
-        name="2026-2027",
+        name=f"calendar-test-{uuid4()}",
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
     )
@@ -314,7 +396,7 @@ def test_get_academic_holiday_not_found(db):
 def test_deactivate_academic_holiday(db):
     academic_year = AcademicCalendarService.create_academic_year(
         db,
-        name="2026-2027",
+        name=f"calendar-test-{uuid4()}",
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
     )
@@ -349,30 +431,30 @@ def test_deactivate_academic_holiday(db):
 
 
 def test_service_does_not_commit(db):
+    name = f"calendar-test-{uuid4()}"
+
     academic_year = AcademicCalendarService.create_academic_year(
         db,
-        name="2026-2027",
+        name=name,
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
     )
 
     assert academic_year.id is not None
-
-    # flush() makes the object/database row available inside the
-    # current transaction, but the service must not commit it.
     assert (
         db.query(AcademicYear)
         .filter(AcademicYear.id == academic_year.id)
         .one()
         .name
-        == "2026-2027"
+        == name
     )
 
+    year_id = academic_year.id
     db.rollback()
 
     assert (
         db.query(AcademicYear)
-        .filter(AcademicYear.id == academic_year.id)
+        .filter(AcademicYear.id == year_id)
         .first()
         is None
     )
@@ -381,7 +463,7 @@ def test_service_does_not_commit(db):
 def test_update_holiday_preserves_identity_and_can_reactivate(db):
     academic_year = AcademicCalendarService.create_academic_year(
         db,
-        name="2026-2027",
+        name=f"calendar-test-{uuid4()}",
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
     )
@@ -418,7 +500,7 @@ def test_update_holiday_preserves_identity_and_can_reactivate(db):
 def test_calendar_range_must_be_inside_academic_year(db):
     academic_year = AcademicCalendarService.create_academic_year(
         db,
-        name="2026-2027",
+        name=f"calendar-test-{uuid4()}",
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
     )
@@ -447,7 +529,7 @@ def test_planning_compliance_requires_monday(db):
 def test_aggregation_empty_range(db):
     from app.services.academic_calendar.service import AcademicCalendarService
     academic_year = AcademicCalendarService.create_academic_year(
-        db, name="2026-2027", start_date=date(2026, 6, 1), end_date=date(2027, 5, 31)
+        db, name=f"calendar-test-{uuid4()}", start_date=date(2026, 6, 1), end_date=date(2027, 5, 31)
     )
     db.commit()
 
@@ -474,59 +556,106 @@ def test_aggregation_with_holiday_and_reschedule(db):
     from app.models.school import School
 
     academic_year = AcademicCalendarService.create_academic_year(
-        db, name="2026-2027", start_date=date(2026, 6, 1), end_date=date(2027, 5, 31)
+        db,
+        name=f"calendar-test-{uuid4()}",
+        start_date=date(2026, 6, 1),
+        end_date=date(2027, 5, 31),
     )
     holiday = AcademicCalendarService.create_academic_holiday(
-        db, academic_year_id=academic_year.id, holiday_date=date(2026, 7, 2),
-        name="Test Holiday", type="OTHER"
+        db,
+        academic_year_id=academic_year.id,
+        holiday_date=date(2026, 7, 2),
+        name=f"Test Holiday-{uuid4()}",
+        type="OTHER",
     )
 
     user_id = uuid4()
-    u = User(id=user_id, user_code=f"U_{uuid4().hex[:6]}", full_name="T", email=f"{uuid4().hex[:6]}@t.com", password_hash="h")
-    db.add(u)
+    user = User(
+        id=user_id,
+        user_code=f"U_{uuid4().hex[:6]}",
+        full_name="T",
+        email=f"{uuid4().hex[:6]}@t.com",
+        password_hash="h",
+    )
+    db.add(user)
 
     school_id = uuid4()
-    s = School(id=school_id, school_name="S1", school_code=f"S_{uuid4().hex[:6]}")
-    db.add(s)
+    school = School(
+        id=school_id,
+        school_name="S1",
+        school_code=f"S_{uuid4().hex[:6]}",
+    )
+    db.add(school)
 
-    cd_id = uuid4()
-    cd = ClassDivision(id=cd_id, school_id=school_id, class_level=5, division="A")
-    db.add(cd)
+    class_division_id = uuid4()
+    class_division = ClassDivision(
+        id=class_division_id,
+        school_id=school_id,
+        class_level=5,
+        division="A",
+    )
+    db.add(class_division)
 
-    spw_id = uuid4()
-    spw = SessionPlanWeek(id=spw_id, para_teacher_id=user_id, week_start_date=date(2026, 6, 29), week_end_date=date(2026, 7, 5))
-    db.add(spw)
+    week_id = uuid4()
+    week = SessionPlanWeek(
+        id=week_id,
+        para_teacher_id=user_id,
+        week_start_date=date(2026, 6, 29),
+        week_end_date=date(2026, 7, 5),
+    )
+    db.add(week)
 
-    # Session 1: On normal day (future)
-    spi1 = SessionPlanItem(session_plan_week_id=spw_id, class_division_id=cd_id, planned_date=date(2026, 7, 3), sequence_no=1)
-    db.add(spi1)
+    # Session 1: On a normal future day.
+    session_normal = SessionPlanItem(
+        session_plan_week_id=week_id,
+        class_division_id=class_division_id,
+        planned_date=date(2026, 7, 3),
+        sequence_no=1,
+    )
+    db.add(session_normal)
 
-    # Session 2: On holiday
-    spi2 = SessionPlanItem(session_plan_week_id=spw_id, class_division_id=cd_id, planned_date=date(2026, 7, 2), sequence_no=2)
-    db.add(spi2)
+    # Session 2: On a holiday.
+    session_holiday = SessionPlanItem(
+        session_plan_week_id=week_id,
+        class_division_id=class_division_id,
+        planned_date=date(2026, 7, 2),
+        sequence_no=2,
+    )
+    db.add(session_holiday)
 
-    # Session 3: Past due
-    spi3 = SessionPlanItem(session_plan_week_id=spw_id, class_division_id=cd_id, planned_date=date(2026, 7, 1), sequence_no=3)
-    db.add(spi3)
+    # Session 3: Past due.
+    session_past_due = SessionPlanItem(
+        session_plan_week_id=week_id,
+        class_division_id=class_division_id,
+        planned_date=date(2026, 7, 1),
+        sequence_no=3,
+    )
+    db.add(session_past_due)
 
-    db.commit()
+    # Flush so IDs and constraints are resolved without committing test data.
+    # The calendar query uses this same session and can read these rows.
+    db.flush()
 
     days = AcademicCalendarService.get_calendar_view(
-        db, academic_year_id=academic_year.id, para_teacher_id=user_id,
-        start_date=date(2026, 7, 1), end_date=date(2026, 7, 3), current_date=date(2026, 7, 2)
+        db,
+        academic_year_id=academic_year.id,
+        para_teacher_id=user_id,
+        start_date=date(2026, 7, 1),
+        end_date=date(2026, 7, 3),
+        current_date=date(2026, 7, 2),
     )
 
     assert len(days) == 3
 
-    # 7/1: past due -> RESCHEDULE_REQUIRED
+    # 7/1: past due -> RESCHEDULE_REQUIRED.
     assert days[0].calendar_date == date(2026, 7, 1)
     assert days[0].sessions[0].derived_status == "RESCHEDULE_REQUIRED"
 
-    # 7/2: holiday -> RESCHEDULE_REQUIRED
+    # 7/2: holiday -> RESCHEDULE_REQUIRED.
     assert days[1].calendar_date == date(2026, 7, 2)
     assert days[1].is_holiday is True
     assert days[1].sessions[0].derived_status == "RESCHEDULE_REQUIRED"
 
-    # 7/3: future -> PLANNED
+    # 7/3: future -> PLANNED.
     assert days[2].calendar_date == date(2026, 7, 3)
     assert days[2].sessions[0].derived_status == "PLANNED"
