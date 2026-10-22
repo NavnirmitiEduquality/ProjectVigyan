@@ -207,3 +207,56 @@ def test_pending_notifications_excludes_unauthorized_records(monkeypatch):
     result = router.pending_notifications(current_user, db)
 
     assert result == []
+
+
+def test_planning_notifications_returns_only_query_results_for_current_user(
+    monkeypatch,
+):
+    from datetime import date, datetime, timezone
+
+    current_user = Mock()
+    current_user.id = uuid4()
+
+    notification = Mock()
+    notification.id = uuid4()
+    notification.notification_type = "WEEKLY_PLANNING_NONCOMPLIANCE"
+    notification.para_teacher_id = uuid4()
+    notification.session_plan_item_id = None
+    notification.week_start_date = date(2026, 10, 19)
+    notification.message = "Weekly planning shortfall"
+    notification.is_read = False
+    notification.created_at = datetime.now(timezone.utc)
+
+    db = Mock()
+    db.query.return_value.filter.return_value.order_by.return_value.all.return_value = [
+        notification
+    ]
+
+    result = router.planning_notifications(current_user, db)
+
+    assert len(result) == 1
+    assert result[0] == {
+        "id": notification.id,
+        "notification_type": notification.notification_type,
+        "para_teacher_id": notification.para_teacher_id,
+        "session_plan_item_id": None,
+        "week_start_date": date(2026, 10, 19),
+        "message": "Weekly planning shortfall",
+        "is_read": False,
+        "created_at": notification.created_at,
+    }
+
+    db.query.assert_called_once_with(router.PlanningNotification)
+    filtered_query = db.query.return_value.filter.return_value
+    filtered_query.order_by.assert_called_once()
+    assert filtered_query.order_by.call_count == 1
+
+
+def test_planning_notifications_returns_empty_list_when_none_exist():
+    current_user = Mock()
+    current_user.id = uuid4()
+
+    db = Mock()
+    db.query.return_value.filter.return_value.order_by.return_value.all.return_value = []
+
+    assert router.planning_notifications(current_user, db) == []

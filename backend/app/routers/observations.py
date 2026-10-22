@@ -26,6 +26,7 @@ from app.models import (
     SchoolTeacherSubject,
     STEMInspection,
     UserAssignment,
+    PlanningNotification,
     User,
     Photo,
 )
@@ -700,6 +701,35 @@ def _report_response(kind: str, record_id: UUID, current_user: User, db: Session
             media_type=report.media_type,
             filename=report.original_filename,
         )
+
+
+@router.get("/notifications/planning")
+def planning_notifications(
+    current_user: User = Depends(
+        require_permission("planning_notification.view")
+    ),
+    db: Session = Depends(get_db),
+):
+    items = (
+        db.query(PlanningNotification)
+        .filter(PlanningNotification.recipient_id == current_user.id)
+        .order_by(PlanningNotification.created_at.desc())
+        .all()
+    )
+
+    return [
+        {
+            "id": item.id,
+            "notification_type": item.notification_type,
+            "para_teacher_id": item.para_teacher_id,
+            "session_plan_item_id": item.session_plan_item_id,
+            "week_start_date": item.week_start_date,
+            "message": item.message,
+            "is_read": item.is_read,
+            "created_at": item.created_at,
+        }
+        for item in items
+    ]
 
 
 @router.get("/notifications/pending")

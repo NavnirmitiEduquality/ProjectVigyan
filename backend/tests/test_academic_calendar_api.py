@@ -21,6 +21,9 @@ from app.models import (
     User,
     UserAssignment,
     UserRole,
+    PlanningNotification,
+    Permission,
+    RolePermission,
 )
 from app.services.academic_calendar.service import AcademicCalendarService
 from app.services.session_plan.service import SessionPlanService
@@ -512,3 +515,154 @@ def test_project_wide_user_can_view_planning_compliance(calendar_setup):
     assert matching
     assert matching[0]["planned_session_count"] == 1
     assert matching[0]["minimum_met"] is False
+
+
+def test_planning_notifications_requires_authentication():
+    response = client.get("/api/v1/notifications/planning")
+    assert response.status_code == 401
+
+
+def test_para_teacher_can_view_own_planning_notifications(calendar_setup):
+    token = login(calendar_setup["test_teacher_email"])
+
+    response = client.get(
+        "/api/v1/notifications/planning",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    assert isinstance(response.json(), list)
+
+
+def test_planning_notifications_requires_permission(calendar_setup):
+
+    db = SessionLocal()
+    removed_link = None
+
+    try:
+        role = db.query(Role).filter(Role.code == "DATA_MANAGER").one()
+        permission = (
+            db.query(Permission)
+            .filter(Permission.code == "planning_notification.view")
+            .one()
+        )
+        removed_link = (
+            db.query(RolePermission)
+            .filter(
+                RolePermission.role_id == role.id,
+                RolePermission.permission_id == permission.id,
+            )
+            .one_or_none()
+        )
+
+        assert removed_link is not None, (
+            "Expected the seeded Data Manager permission link to exist."
+        )
+
+        db.delete(removed_link)
+        db.commit()
+    finally:
+        db.close()
+
+    try:
+        token = login(calendar_setup["data_manager_email"])
+        response = client.get(
+            "/api/v1/notifications/planning",
+            headers=auth_headers(token),
+        )
+        assert response.status_code == 403, response.text
+    finally:
+        restore_db = SessionLocal()
+        try:
+            role = (
+                restore_db.query(Role)
+                .filter(Role.code == "DATA_MANAGER")
+                .one()
+            )
+            permission = (
+                restore_db.query(Permission)
+                .filter(Permission.code == "planning_notification.view")
+                .one()
+            )
+            link_exists = (
+                restore_db.query(RolePermission)
+                .filter(
+                    RolePermission.role_id == role.id,
+                    RolePermission.permission_id == permission.id,
+                )
+                .first()
+            )
+            if link_exists is None:
+                restore_db.add(
+                    RolePermission(
+                        role_id=role.id,
+                        permission_id=permission.id,
+                    )
+                )
+                restore_db.commit()
+        finally:
+            restore_db.close()
+
+
+def test_planning_notifications_only_returns_current_users_records(
+    calendar_setup,
+):
+    from datetime import date
+
+    recipient_id = calendar_setup["test_teacher_id"]
+    other_recipient_id = calendar_setup["teacher_id"]
+    para_teacher_id = calendar_setup["test_teacher_id"]
+
+    db = SessionLocal()
+    notification_ids = []
+    try:
+        notifications = [
+            PlanningNotification(
+                recipient_id=recipient_id,
+                notification_type="WEEKLY_PLANNING_NONCOMPLIANCE",
+                para_teacher_id=para_teacher_id,
+                week_start_date=date(2026, 10, 19),
+                message="Test notification for current recipient",
+            ),
+            PlanningNotification(
+                recipient_id=other_recipient_id,
+                notification_type="WEEKLY_PLANNING_NONCOMPLIANCE",
+                para_teacher_id=para_teacher_id,
+                week_start_date=date(2026, 10, 19),
+                message="Test notification for another recipient",
+            ),
+        ]
+        db.add_all(notifications)
+        db.flush()
+        notification_ids = [item.id for item in notifications]
+        db.commit()
+    finally:
+        db.close()
+
+    try:
+        token = login(calendar_setup["test_teacher_email"])
+        response = client.get(
+            "/api/v1/notifications/planning",
+            headers=auth_headers(token),
+        )
+
+        assert response.status_code == 200, response.text
+        results = response.json()
+
+        assert any(
+            item["message"] == "Test notification for current recipient"
+            for item in results
+        )
+        assert not any(
+            item["message"] == "Test notification for another recipient"
+            for item in results
+        )
+    finally:
+        cleanup = SessionLocal()
+        try:
+            cleanup.query(PlanningNotification).filter(
+                PlanningNotification.id.in_(notification_ids)
+            ).delete(synchronize_session=False)
+            cleanup.commit()
+        finally:
+            cleanup.close()

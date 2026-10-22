@@ -23,6 +23,7 @@ from app.models.assessment import (
     AssessmentResult,
     AssessmentClassDivision,
 )
+from app.models.planning_notification import PlanningNotification
 from app.models.observation import (
     ClassroomObservation,
     ClassroomObservationReport,
@@ -70,4 +71,5 @@ __all__ = [
     "STEMInspectionReport",
     "ObservationReportCorrection",
     "PendingReportNotification",
+    "PlanningNotification",
 ]

@@ -142,6 +142,8 @@ PERMISSIONS = [
     ("View Reports", "report.view", "report"),
     ("Export Reports", "report.export", "report"),
 
+    ("View Planning Notifications", "planning_notification.view", "planning_notification"),
+
     # Classroom observations and STEM inspections
     ("View Classroom Observations", "classroom_observation.view", "classroom_observation"),
     ("Create Classroom Observations", "classroom_observation.create", "classroom_observation"),
@@ -237,6 +239,7 @@ ROLE_PERMISSIONS = {
         "change_request.view",
         "change_request.approve",
         "change_request.reject",
+        "planning_notification.view",
     },
 
     "DATA_MANAGER": {
@@ -285,6 +288,7 @@ ROLE_PERMISSIONS = {
         "observation_notification.view",
         "change_request.create",
         "change_request.view",
+        "planning_notification.view",
     },
 
     "MANAGEMENT": {
@@ -307,6 +311,7 @@ ROLE_PERMISSIONS = {
         "classroom_observation.view",
         "stem_inspection.view",
         "observation_notification.view",
+        "planning_notification.view",
     },
 
     "STEM_COORDINATOR": {
@@ -332,6 +337,7 @@ ROLE_PERMISSIONS = {
         "stem_inspection.create",
         "stem_inspection.report.submit",
         "observation_notification.view",
+        "planning_notification.view",
     },
 
     "PARA_TEACHER": {
@@ -366,6 +372,7 @@ ROLE_PERMISSIONS = {
         "classroom_observation.create",
         "classroom_observation.report.submit",
         "observation_notification.view",
+        "planning_notification.view",
     },
 }
 
