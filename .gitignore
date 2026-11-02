@@ -32,6 +32,7 @@ Thumbs.db
 
 # Logs
 *.log
+*.mcp.json
 
 # Local database / data
 *.sqlite
@@ -53,3 +54,10 @@ docs/Tasks.md
 docs/Memory.md
 docs/Project_Vigyan_Assessment_V1_Requirements_and_Data_Model_Specification.docx
 docs/Project_Vigyan_Reporting_Monitoring_Copilot_Implementation_Prompt_v1.0.md
+docs/Project_Vigyan_Academic_Calendar_and_Next_Roadmap_v1.0.docx
+docs/Project_Vigyan_Academic_Calendar_and_Next_Roadmap_v1.0.md
+docs/Project_Vigyan_Assessment_V1_Requirements_and_Data_Model_Specification.md
+docs/Project_Vigyan_Security_Audit_Checklist.md
+
+# Local QA handover document
+docs/Project_Vigyan_QA_Handover_and_Cleanup_Runbook_v1.0.docx

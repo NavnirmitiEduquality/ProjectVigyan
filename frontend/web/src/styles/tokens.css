@@ -1,0 +1,45 @@
+:root {
+  font-family: Inter, sans-serif;
+  color: #121915;
+  background: #FCF9F0;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.app-shell {
+  --canvas: #FCF9F0;
+  --card: #FFFFFF;
+  --border: #E6E1D3;
+  --primary: #193D30;
+  --primary-hover: #122F24;
+  --accent: #C8A856;
+  --text: #121915;
+  --muted: #5D6B60;
+  --input-bg: #fff;
+  --error: #a8422b;
+  --error-bg: #fbf1ed;
+  --error-border: #e2a893;
+  --warning: #7a4e1d;
+  --warning-bg: #fdf8f0;
+  --warning-border: #d8c29d;
+}
+
+.app-shell.is-dark {
+  --canvas: #121915;
+  --card: #19231D;
+  --border: #28372E;
+  --primary: #C8A856;
+  --primary-hover: #B39443;
+  --accent: #C8A856;
+  --text: #FCF9F0;
+  --muted: #A9B5AC;
+  --input-bg: #141c17;
+  --error: #e5735b;
+  --error-bg: #341b12;
+  --error-border: #7c3920;
+  --warning: #f3d4a6;
+  --warning-bg: #2b2518;
+  --warning-border: #695632;
+}

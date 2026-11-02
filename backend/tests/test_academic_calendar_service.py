@@ -114,6 +114,7 @@ def test_create_academic_year(db):
         name=f"calendar-test-{uuid4()}",
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
+        data_origin="TEST",
     )
 
     assert academic_year.id is not None
@@ -121,7 +122,7 @@ def test_create_academic_year(db):
     assert academic_year.start_date == date(2026, 6, 1)
     assert academic_year.end_date == date(2027, 5, 31)
     assert academic_year.is_active is True
-    assert academic_year.data_origin == "PRODUCTION"
+    assert academic_year.data_origin == "TEST"
 
     db.commit()
 
@@ -133,6 +134,7 @@ def test_get_active_academic_year(db):
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
         is_active=True,
+        data_origin="TEST",
     )
 
     query = MagicMock()
@@ -174,6 +176,7 @@ def test_create_academic_year_rejects_duplicate_name(db):
         name=name,
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
+        data_origin="TEST",
     )
     db.commit()
 
@@ -192,6 +195,7 @@ def test_create_academic_holiday(db):
         name=f"calendar-test-{uuid4()}",
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
+        data_origin="TEST",
     )
     db.commit()
 
@@ -202,6 +206,7 @@ def test_create_academic_holiday(db):
         name="Independence Day",
         type="NATIONAL",
         description="National holiday",
+        data_origin="TEST",
     )
 
     assert holiday.id is not None
@@ -211,7 +216,7 @@ def test_create_academic_holiday(db):
     assert holiday.type == "NATIONAL"
     assert holiday.description == "National holiday"
     assert holiday.is_active is True
-    assert holiday.data_origin == "PRODUCTION"
+    assert holiday.data_origin == "TEST"
 
     db.commit()
 
@@ -235,6 +240,7 @@ def test_create_academic_holiday_rejects_duplicate_date(db):
         name=f"calendar-test-{uuid4()}",
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
+        data_origin="TEST",
     )
     db.commit()
 
@@ -244,6 +250,7 @@ def test_create_academic_holiday_rejects_duplicate_date(db):
         holiday_date=date(2026, 8, 15),
         name="Independence Day",
         type="NATIONAL",
+        data_origin="TEST",
     )
     db.commit()
 
@@ -265,6 +272,7 @@ def test_list_active_holidays_ordered_by_date(db):
         name=f"calendar-test-{uuid4()}",
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
+        data_origin="TEST",
     )
     db.commit()
 
@@ -274,6 +282,7 @@ def test_list_active_holidays_ordered_by_date(db):
         holiday_date=date(2026, 12, 25),
         name="Christmas",
         type="RELIGIOUS",
+        data_origin="TEST",
     )
 
     early = AcademicCalendarService.create_academic_holiday(
@@ -282,6 +291,7 @@ def test_list_active_holidays_ordered_by_date(db):
         holiday_date=date(2026, 8, 15),
         name="Independence Day",
         type="NATIONAL",
+        data_origin="TEST",
     )
 
     middle = AcademicCalendarService.create_academic_holiday(
@@ -290,6 +300,7 @@ def test_list_active_holidays_ordered_by_date(db):
         holiday_date=date(2026, 10, 2),
         name="Gandhi Jayanti",
         type="NATIONAL",
+        data_origin="TEST",
     )
 
     db.commit()
@@ -312,6 +323,7 @@ def test_list_holidays_can_include_inactive(db):
         name=f"calendar-test-{uuid4()}",
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
+        data_origin="TEST",
     )
     db.commit()
 
@@ -321,6 +333,7 @@ def test_list_holidays_can_include_inactive(db):
         holiday_date=date(2026, 8, 15),
         name="Independence Day",
         type="NATIONAL",
+        data_origin="TEST",
     )
 
     inactive_holiday = AcademicCalendarService.create_academic_holiday(
@@ -329,6 +342,7 @@ def test_list_holidays_can_include_inactive(db):
         holiday_date=date(2026, 10, 2),
         name="Gandhi Jayanti",
         type="NATIONAL",
+        data_origin="TEST",
     )
 
     AcademicCalendarService.deactivate_holiday(
@@ -364,6 +378,7 @@ def test_get_academic_holiday(db):
         name=f"calendar-test-{uuid4()}",
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
+        data_origin="TEST",
     )
     db.commit()
 
@@ -373,6 +388,7 @@ def test_get_academic_holiday(db):
         holiday_date=date(2026, 8, 15),
         name="Independence Day",
         type="NATIONAL",
+        data_origin="TEST",
     )
     db.commit()
 
@@ -399,6 +415,7 @@ def test_deactivate_academic_holiday(db):
         name=f"calendar-test-{uuid4()}",
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
+        data_origin="TEST",
     )
     db.commit()
 
@@ -408,6 +425,7 @@ def test_deactivate_academic_holiday(db):
         holiday_date=date(2026, 8, 15),
         name="Independence Day",
         type="NATIONAL",
+        data_origin="TEST",
     )
     db.commit()
 
@@ -438,6 +456,7 @@ def test_service_does_not_commit(db):
         name=name,
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
+        data_origin="TEST",
     )
 
     assert academic_year.id is not None
@@ -466,6 +485,7 @@ def test_update_holiday_preserves_identity_and_can_reactivate(db):
         name=f"calendar-test-{uuid4()}",
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
+        data_origin="TEST",
     )
     holiday = AcademicCalendarService.create_academic_holiday(
         db,
@@ -473,6 +493,7 @@ def test_update_holiday_preserves_identity_and_can_reactivate(db):
         holiday_date=date(2026, 8, 15),
         name="Independence Day",
         type="NATIONAL",
+        data_origin="TEST",
     )
 
     updated = AcademicCalendarService.update_holiday(
@@ -503,6 +524,7 @@ def test_calendar_range_must_be_inside_academic_year(db):
         name=f"calendar-test-{uuid4()}",
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
+        data_origin="TEST",
     )
 
     with pytest.raises(ValueError, match="within the academic year"):
@@ -529,7 +551,11 @@ def test_planning_compliance_requires_monday(db):
 def test_aggregation_empty_range(db):
     from app.services.academic_calendar.service import AcademicCalendarService
     academic_year = AcademicCalendarService.create_academic_year(
-        db, name=f"calendar-test-{uuid4()}", start_date=date(2026, 6, 1), end_date=date(2027, 5, 31)
+        db,
+        name=f"calendar-test-{uuid4()}",
+        start_date=date(2026, 6, 1),
+        end_date=date(2027, 5, 31),
+        data_origin="TEST",
     )
     db.commit()
 
@@ -560,6 +586,7 @@ def test_aggregation_with_holiday_and_reschedule(db):
         name=f"calendar-test-{uuid4()}",
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
+        data_origin="TEST",
     )
     holiday = AcademicCalendarService.create_academic_holiday(
         db,
@@ -567,6 +594,7 @@ def test_aggregation_with_holiday_and_reschedule(db):
         holiday_date=date(2026, 7, 2),
         name=f"Test Holiday-{uuid4()}",
         type="OTHER",
+        data_origin="TEST",
     )
 
     user_id = uuid4()

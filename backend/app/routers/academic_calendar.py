@@ -14,12 +14,13 @@ from app.dependencies import (
     require_permission,
     require_school_access,
 )
-from app.models import ClassDivision, SessionPlanItem, User
+from app.models import AcademicYear, ClassDivision, SessionPlanItem, User
 from app.services.academic_calendar.service import (
     AcademicCalendarError,
     AcademicCalendarService,
     AcademicHolidayAlreadyExistsError,
     AcademicHolidayNotFoundError,
+    AcademicYearAlreadyExistsError,
     AcademicYearNotFoundError,
     ActiveAcademicYearNotFoundError,
 )
@@ -50,6 +51,29 @@ class CalendarSessionResponse(BaseModel):
     teaching_session_id: UUID | None
     teaching_session_status: str | None
     derived_status: str
+
+
+class AcademicYearResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    name: str
+    start_date: date
+    end_date: date
+    is_active: bool
+
+
+class AcademicYearCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=50)
+    start_date: date
+    end_date: date
+    is_active: bool = True
+
+    @model_validator(mode="after")
+    def validate_date_range(self) -> AcademicYearCreate:
+        if self.start_date >= self.end_date:
+            raise ValueError("start_date must be before end_date.")
+        return self
 
 
 class CalendarDayResponse(BaseModel):
@@ -137,6 +161,7 @@ def _raise_calendar_http_error(exc: Exception) -> None:
         exc,
         (
             AcademicHolidayAlreadyExistsError,
+            AcademicYearAlreadyExistsError,
             SessionPlanItemLockedError,
         ),
     ):
@@ -218,6 +243,59 @@ def get_calendar(
         AcademicCalendarError,
         ValueError,
     ) as exc:
+        _raise_calendar_http_error(exc)
+
+
+@router.get(
+    "/years",
+    response_model=list[AcademicYearResponse],
+)
+def list_academic_years(
+    current_user: User = Depends(
+        require_permission("calendar.view")
+    ),
+    db: Session = Depends(get_db),
+):
+    """List production academic years available for reporting."""
+
+    return (
+        db.query(AcademicYear)
+        .filter(AcademicYear.data_origin == "PRODUCTION")
+        .order_by(
+            AcademicYear.is_active.desc(),
+            AcademicYear.start_date.desc(),
+        )
+        .all()
+    )
+
+
+@router.post(
+    "/years",
+    response_model=AcademicYearResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_academic_year(
+    payload: AcademicYearCreate,
+    _authorization_user: User = Depends(
+        require_permission("calendar.manage")
+    ),
+    db: Session = Depends(get_db),
+):
+    try:
+        academic_year = AcademicCalendarService.create_academic_year(
+            db,
+            name=payload.name,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            is_active=payload.is_active,
+            data_origin="PRODUCTION",
+        )
+        _commit(db, "Unable to create academic year.")
+        db.refresh(academic_year)
+        return academic_year
+    except HTTPException:
+        raise
+    except (AcademicCalendarError, ValueError) as exc:
         _raise_calendar_http_error(exc)
 
 

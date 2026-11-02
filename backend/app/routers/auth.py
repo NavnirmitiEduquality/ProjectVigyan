@@ -2,14 +2,17 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from app.dependencies import require_permission, get_current_user
+from app.dependencies import (
+    get_current_user,
+    get_user_permission_codes,
+    require_permission,
+)
 
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
 from app.models import AuthSession, User
 from app.database import get_db
-from app.models import AuthSession, User
 from app.services.auth_service import (
     generate_session_token,
     hash_session_token,
@@ -100,13 +103,17 @@ def login(
 @router.get("/me")
 def get_me(
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
+    permissions = get_user_permission_codes(current_user, db)
+
     return {
         "user_id": str(current_user.id),
         "user_code": current_user.user_code,
         "full_name": current_user.full_name,
         "email": current_user.email,
         "status": current_user.status,
+        "permissions": sorted(permissions),
     }
 
 

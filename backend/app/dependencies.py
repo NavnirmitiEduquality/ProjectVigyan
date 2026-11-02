@@ -163,6 +163,36 @@ def get_user_role_codes(
     return {role_code for (role_code,) in roles}
 
 
+def get_user_permission_codes(
+    current_user: User,
+    db: Session,
+) -> set[str]:
+    """
+    Return all effective permission codes for the current user.
+
+    Platform Owner has unrestricted platform access.
+    Other users receive permissions through active role assignments.
+    """
+    role_codes = get_user_role_codes(current_user, db)
+
+    if "PLATFORM_OWNER" in role_codes:
+        permissions = db.query(Permission.code).all()
+    else:
+        permissions = (
+            db.query(Permission.code)
+            .join(RolePermission, RolePermission.permission_id == Permission.id)
+            .join(Role, Role.id == RolePermission.role_id)
+            .join(UserRole, UserRole.role_id == Role.id)
+            .filter(
+                UserRole.user_id == current_user.id,
+                UserRole.is_active.is_(True),
+            )
+            .all()
+        )
+
+    return {permission_code for (permission_code,) in permissions}
+
+
 def get_authorized_school_ids(
     current_user: User,
     db: Session,

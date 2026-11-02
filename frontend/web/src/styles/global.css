@@ -1,0 +1,14 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Material+Symbols+Outlined:FILL,wght@0..1,100..700&display=swap');
+
+* { box-sizing: border-box; }
+html, body, #app { min-width: 320px; min-height: 100%; margin: 0; }
+body { min-height: 100svh; }
+button, input { font: inherit; }
+button { cursor: pointer; }
+
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-size: 1.25rem;
+  line-height: 1;
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+}

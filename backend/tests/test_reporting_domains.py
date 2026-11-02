@@ -107,6 +107,7 @@ def domain_fixture(reporting_fixture):
         is_active=True,
         data_origin="PRODUCTION",
     )
+    created_na_tlm = False
     na_tlm = db.query(TLM).filter(TLM.name == NA_TLM_NAME).one_or_none()
     if na_tlm is None:
         na_tlm = TLM(
@@ -116,6 +117,7 @@ def domain_fixture(reporting_fixture):
             data_origin="PRODUCTION",
         )
         db.add(na_tlm)
+        created_na_tlm = True
     db.add(normal_tlm)
     db.flush()
     db.add_all(
@@ -207,7 +209,14 @@ def domain_fixture(reporting_fixture):
         ]
     )
     db.commit()
-    yield {**fixture, "sessions": rows, "normal_tlm": normal_tlm, "assessments": [baseline, endline]}
+    yield {
+        **fixture,
+        "sessions": rows,
+        "normal_tlm": normal_tlm,
+        "assessments": [baseline, endline],
+        "na_tlm": na_tlm,
+        "created_na_tlm": created_na_tlm,
+    }
     db.rollback()
     db.execute(
         delete(SessionEvidence).where(
@@ -231,6 +240,8 @@ def domain_fixture(reporting_fixture):
     )
     db.execute(delete(Assessment).where(Assessment.id.in_([baseline.id, endline.id])))
     db.delete(normal_tlm)
+    if created_na_tlm:
+        db.delete(na_tlm)
     db.query(TeachingSession).filter(
         TeachingSession.id.in_([row.id for row in rows])
     ).delete(synchronize_session=False)
@@ -1335,3 +1346,40 @@ def test_para_teacher_monitoring_keeps_session_metrics_attributed_by_school(
         assert project_two_row["tlm"] == school_two_row["tlm"]
     finally:
         db.rollback()
+
+
+def test_delivery_trend_api_response_contract(domain_fixture):
+    fixture = domain_fixture
+
+    response = client.get(
+        "/api/v1/reporting/trends/delivery",
+        params={
+            "group_by": "project",
+            "start_date": "2026-06-01",
+            "end_date": "2026-06-06",
+        },
+        headers={
+            "Authorization": f"Bearer {fixture['platform_owner_token']}"
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+
+    assert payload["group_by"] == "project"
+    assert isinstance(payload["items"], list)
+    assert len(payload["items"]) == 1
+
+    item = payload["items"][0]
+    assert item["session_count"] == 6
+    assert item["completed_sessions"] == 4
+    assert item["completed_duration_minutes"] == 180
+
+    # PostgreSQL date_trunc should be serialized to a JSON date/time string.
+    assert isinstance(item["month"], str)
+    parsed_month = datetime.fromisoformat(item["month"].replace("Z", "+00:00"))
+    assert parsed_month.year == 2026
+    assert parsed_month.month == 6
+
+    # Completion percentage is not part of the trend response contract.
+    assert "completion_percentage" not in item

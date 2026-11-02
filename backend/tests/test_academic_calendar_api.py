@@ -3,15 +3,16 @@ from __future__ import annotations
 import os
 from datetime import date, time, timedelta
 from uuid import UUID, uuid4
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from dotenv import load_dotenv
 from fastapi.testclient import TestClient
 
-from app.database import SessionLocal
+from app.database import SessionLocal, get_db
 from app.main import app
 from app.models import (
+    AuthSession,
     AcademicHoliday,
     AcademicYear,
     ClassDivision,
@@ -666,3 +667,336 @@ def test_planning_notifications_only_returns_current_users_records(
             cleanup.commit()
         finally:
             cleanup.close()
+
+
+@pytest.fixture
+def academic_years_list_setup():
+    db = SessionLocal()
+    suffix = uuid4().hex
+    years = [
+        AcademicYear(
+            name=f"Years-List-Active-{suffix}",
+            start_date=date(2025, 4, 1),
+            end_date=date(2026, 3, 31),
+            is_active=True,
+            data_origin="PRODUCTION",
+        ),
+        AcademicYear(
+            name=f"Years-List-Recent-{suffix}",
+            start_date=date(2026, 4, 1),
+            end_date=date(2027, 3, 31),
+            is_active=False,
+            data_origin="PRODUCTION",
+        ),
+        AcademicYear(
+            name=f"Years-List-Older-{suffix}",
+            start_date=date(2024, 4, 1),
+            end_date=date(2025, 3, 31),
+            is_active=False,
+            data_origin="PRODUCTION",
+        ),
+        AcademicYear(
+            name=f"Years-List-Demo-{suffix}",
+            start_date=date(2027, 4, 1),
+            end_date=date(2028, 3, 31),
+            is_active=True,
+            data_origin="DEMO",
+        ),
+        AcademicYear(
+            name=f"Years-List-Test-{suffix}",
+            start_date=date(2028, 4, 1),
+            end_date=date(2029, 3, 31),
+            is_active=True,
+            data_origin="TEST",
+        ),
+    ]
+
+    user = None
+    try:
+        db.add_all(years)
+
+        password_hash = (
+            db.query(User.password_hash)
+            .filter(User.email == PARA_TEACHER_EMAIL)
+            .scalar()
+        )
+        assert password_hash is not None
+
+        user = User(
+            user_code=f"YEARS-LIST-{suffix[:12]}",
+            full_name="Academic Year List API Test User",
+            email=f"years-list-{suffix}@example.com",
+            password_hash=password_hash,
+            status="ACTIVE",
+            data_origin="TEST",
+        )
+        db.add(user)
+        db.commit()
+
+        result = {
+            "year_ids": [year.id for year in years],
+            "production_ids": {
+                years[0].id,
+                years[1].id,
+                years[2].id,
+            },
+            "expected_order": [
+                years[0].id,
+                years[1].id,
+                years[2].id,
+            ],
+            "user_id": user.id,
+            "user_email": user.email,
+        }
+        yield result
+    finally:
+        if user is not None:
+            db.query(AuthSession).filter(
+                AuthSession.user_id == user.id
+            ).delete(synchronize_session=False)
+
+        db.query(AcademicYear).filter(
+            AcademicYear.id.in_([year.id for year in years])
+        ).delete(synchronize_session=False)
+        if user is not None:
+            db.query(User).filter(User.id == user.id).delete(
+                synchronize_session=False
+            )
+        db.commit()
+        db.close()
+
+
+def test_auth_me_returns_effective_calendar_permissions(calendar_setup):
+    cases = [
+        (calendar_setup["admin_email"], True),
+        (calendar_setup["data_manager_email"], True),
+        (
+            calendar_setup["cross_teacher_role_emails"]["MANAGEMENT"],
+            False,
+        ),
+        (calendar_setup["test_teacher_email"], False),
+    ]
+
+    for email, can_manage_calendar in cases:
+        token = login(email)
+        response = client.get(
+            "/api/v1/auth/me",
+            headers=auth_headers(token),
+        )
+
+        assert response.status_code == 200, response.text
+
+        result = response.json()
+
+        assert result["email"] == email
+        assert result["status"] == "ACTIVE"
+        assert result["user_id"]
+        assert result["user_code"]
+        assert result["full_name"]
+
+        permissions = result["permissions"]
+        assert isinstance(permissions, list)
+        assert "calendar.view" in permissions
+
+        assert ("calendar.manage" in permissions) is can_manage_calendar
+
+
+def test_list_academic_years_requires_authentication():
+    response = client.get("/api/v1/academic-calendar/years")
+    assert response.status_code == 401
+
+
+def test_list_academic_years_filters_and_orders_production_years(
+    academic_years_list_setup,
+):
+    token = login(PARA_TEACHER_EMAIL)
+    response = client.get(
+        "/api/v1/academic-calendar/years",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    results = response.json()
+
+    returned_ids = [UUID(item["id"]) for item in results]
+    returned_test_ids = set(returned_ids) & set(
+        academic_years_list_setup["year_ids"]
+    )
+
+    assert returned_test_ids == academic_years_list_setup["production_ids"]
+
+    returned_fixture_ids = [
+        year_id
+        for year_id in returned_ids
+        if year_id in academic_years_list_setup["production_ids"]
+    ]
+    assert returned_fixture_ids == academic_years_list_setup["expected_order"]
+
+    fixture_results = {
+        UUID(item["id"]): item
+        for item in results
+        if UUID(item["id"]) in academic_years_list_setup["production_ids"]
+    }
+    for year_id, item in fixture_results.items():
+        assert set(item) == {
+            "id",
+            "name",
+            "start_date",
+            "end_date",
+            "is_active",
+        }
+        assert item["start_date"]
+        assert item["end_date"]
+
+
+def test_list_academic_years_requires_calendar_view_permission(
+    academic_years_list_setup,
+):
+    token = login(academic_years_list_setup["user_email"])
+
+    response = client.get(
+        "/api/v1/academic-calendar/years",
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 403, response.text
+
+
+def test_list_academic_years_returns_empty_list_when_no_production_years():
+    from app.dependencies import get_current_user
+
+    db = MagicMock()
+    query = db.query.return_value
+    query.filter.return_value = query
+    query.order_by.return_value = query
+    query.all.return_value = []
+
+    test_user = MagicMock(spec=User)
+
+    def override_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_current_user] = lambda: test_user
+
+    try:
+        response = client.get(
+            "/api/v1/academic-calendar/years",
+            headers={"Authorization": "Bearer empty-years-test-token"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json() == []
+        query.all.assert_called_once_with()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_data_manager_can_create_production_academic_year(calendar_setup):
+    token = login(calendar_setup["data_manager_email"])
+    name = f"API-Created-{uuid4()}"
+
+    response = client.post(
+        "/api/v1/academic-calendar/years",
+        headers=auth_headers(token),
+        json={
+            "name": name,
+            "start_date": "2028-04-01",
+            "end_date": "2029-03-31",
+            "is_active": False,
+        },
+    )
+
+    assert response.status_code == 201, response.text
+
+    result = response.json()
+    assert result["name"] == name
+    assert result["start_date"] == "2028-04-01"
+    assert result["end_date"] == "2029-03-31"
+    assert result["is_active"] is False
+
+    db = SessionLocal()
+    try:
+        created_year = (
+            db.query(AcademicYear)
+            .filter(AcademicYear.id == UUID(result["id"]))
+            .one()
+        )
+        assert created_year.data_origin == "PRODUCTION"
+    finally:
+        db.close()
+
+    listed = client.get(
+        "/api/v1/academic-calendar/years",
+        headers=auth_headers(token),
+    )
+    assert listed.status_code == 200, listed.text
+    assert any(item["id"] == result["id"] for item in listed.json())
+    cleanup = SessionLocal()
+    try:
+        cleanup.query(AcademicYear).filter(
+            AcademicYear.id == UUID(result["id"])
+        ).delete(synchronize_session=False)
+        cleanup.commit()
+    finally:
+        cleanup.close()
+
+
+def test_para_teacher_cannot_create_academic_year(calendar_setup):
+    token = login(calendar_setup["test_teacher_email"])
+
+    response = client.post(
+        "/api/v1/academic-calendar/years",
+        headers=auth_headers(token),
+        json={
+            "name": f"Unauthorized-{uuid4()}",
+            "start_date": "2028-04-01",
+            "end_date": "2029-03-31",
+        },
+    )
+
+    assert response.status_code == 403, response.text
+
+
+def test_create_academic_year_rejects_duplicate_name(calendar_setup):
+    token = login(calendar_setup["data_manager_email"])
+
+    db = SessionLocal()
+    try:
+        existing_year = (
+            db.query(AcademicYear)
+            .filter(AcademicYear.id == calendar_setup["year_id"])
+            .one()
+        )
+        duplicate_name = existing_year.name
+    finally:
+        db.close()
+
+    response = client.post(
+        "/api/v1/academic-calendar/years",
+        headers=auth_headers(token),
+        json={
+            "name": duplicate_name,
+            "start_date": "2028-04-01",
+            "end_date": "2029-03-31",
+        },
+    )
+
+    assert response.status_code == 409, response.text
+
+
+def test_create_academic_year_rejects_invalid_date_range(calendar_setup):
+    token = login(calendar_setup["data_manager_email"])
+
+    response = client.post(
+        "/api/v1/academic-calendar/years",
+        headers=auth_headers(token),
+        json={
+            "name": f"Invalid-Dates-{uuid4()}",
+            "start_date": "2029-03-31",
+            "end_date": "2028-04-01",
+        },
+    )
+
+    assert response.status_code == 422, response.text
