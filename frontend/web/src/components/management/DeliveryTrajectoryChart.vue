@@ -25,7 +25,7 @@
       Select a production academic year to view its delivery trend.
     </p>
     <p v-else-if="months.length === 0 || !hasActivity" class="ov-chart-subtitle" role="status">
-      No production session activity is recorded for this academic year.
+      No production session activity is recorded for the selected reporting period.
     </p>
 
     <div v-if="!loading && !error && months.length && hasActivity" class="ov-chart-body">
@@ -43,16 +43,10 @@
         <div class="ov-bars" :style="{ gridTemplateColumns: `repeat(${months.length}, minmax(0, 1fr))` }">
           <div v-for="month in months" :key="month.key" class="ov-bar-group">
             <div class="ov-bar-pair">
-              <div
-                class="ov-bar ov-bar--total"
-                :style="{ height: `${month.total / axisMax * 100}%` }"
-                :title="`Total sessions: ${month.total}`"
-              ></div>
-              <div
-                class="ov-bar ov-bar--completed"
-                :style="{ height: `${month.completed / axisMax * 100}%` }"
-                :title="`Completed sessions: ${month.completed}`"
-              ></div>
+              <div class="ov-bar ov-bar--total" :style="{ height: `${month.total / axisMax * 100}%` }"
+                :title="`Total sessions: ${month.total}`"></div>
+              <div class="ov-bar ov-bar--completed" :style="{ height: `${month.completed / axisMax * 100}%` }"
+                :title="`Completed sessions: ${month.completed}`"></div>
             </div>
             <div class="ov-bar-label">
               <span class="ov-bar-month">{{ month.label }}</span>
@@ -73,6 +67,8 @@ const props = defineProps<{
   items: DeliveryTrendItem[]
   startDate: string
   endDate: string
+  filterStartDate: string
+  filterEndDate: string
   loading: boolean
   error: string
 }>()
@@ -80,33 +76,104 @@ const props = defineProps<{
 const months = computed(() => {
   if (!props.startDate || !props.endDate) return []
 
-  // Parse date-only values as local calendar dates to avoid UTC month shifts.
-  const start = new Date(`${props.startDate.slice(0, 10)}T12:00:00`)
-  const end = new Date(`${props.endDate.slice(0, 10)}T12:00:00`)
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) return []
+  // Date-only values are parsed as local calendar dates.
+  const parseDate = (value: string) => {
+    const date = new Date(`${value.slice(0, 10)}T12:00:00`)
+    return Number.isNaN(date.getTime()) ? null : date
+  }
+
+  const academicStart = parseDate(props.startDate)
+  const academicEnd = parseDate(props.endDate)
+
+  if (
+    !academicStart ||
+    !academicEnd ||
+    academicStart > academicEnd
+  ) {
+    return []
+  }
+
+  const selectedStart = props.filterStartDate
+    ? parseDate(props.filterStartDate)
+    : null
+
+  const selectedEnd = props.filterEndDate
+    ? parseDate(props.filterEndDate)
+    : null
+
+  if (
+    (props.filterStartDate && !selectedStart) ||
+    (props.filterEndDate && !selectedEnd)
+  ) {
+    return []
+  }
+
+  const start = selectedStart && selectedStart > academicStart
+    ? selectedStart
+    : academicStart
+
+  const end = selectedEnd && selectedEnd < academicEnd
+    ? selectedEnd
+    : academicEnd
+
+  if (start > end) return []
 
   const byMonth = new Map<string, DeliveryTrendItem>()
+
   for (const item of props.items) {
     const date = new Date(item.month)
+
     if (Number.isNaN(date.getTime())) continue
-    const key = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
+
+    const key = [
+      date.getUTCFullYear(),
+      String(date.getUTCMonth() + 1).padStart(2, '0'),
+    ].join('-')
+
     byMonth.set(key, item)
   }
 
-  const result: { key: string; label: string; total: number; completed: number }[] = []
-  const cursor = new Date(start.getFullYear(), start.getMonth(), 1, 12)
-  const last = new Date(end.getFullYear(), end.getMonth(), 1, 12)
+  const result: {
+    key: string
+    label: string
+    total: number
+    completed: number
+  }[] = []
+
+  const cursor = new Date(
+    start.getFullYear(),
+    start.getMonth(),
+    1,
+    12,
+  )
+
+  const last = new Date(
+    end.getFullYear(),
+    end.getMonth(),
+    1,
+    12,
+  )
+
   while (cursor <= last) {
-    const key = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`
+    const key = [
+      cursor.getFullYear(),
+      String(cursor.getMonth() + 1).padStart(2, '0'),
+    ].join('-')
+
     const item = byMonth.get(key)
+
     result.push({
       key,
-      label: cursor.toLocaleDateString(undefined, { month: 'short' }),
+      label: cursor.toLocaleDateString(undefined, {
+        month: 'short',
+      }),
       total: item?.session_count ?? 0,
       completed: item?.completed_sessions ?? 0,
     })
+
     cursor.setMonth(cursor.getMonth() + 1)
   }
+
   return result
 })
 
@@ -130,10 +197,15 @@ const hasActivity = computed(() => months.value.some((month) => month.total > 0)
   flex-direction: column;
   gap: 0;
   min-width: 0;
-  box-shadow: 0 1px 2px rgba(20,30,24,0.04);
+  box-shadow: 0 1px 2px rgba(20, 30, 24, 0.04);
   min-height: 320px;
 }
-@media (min-width: 640px) { .ov-chart-card { padding: 20px; } }
+
+@media (min-width: 640px) {
+  .ov-chart-card {
+    padding: 20px;
+  }
+}
 
 .ov-chart-header {
   display: flex;
@@ -143,18 +215,65 @@ const hasActivity = computed(() => months.value.some((month) => month.total > 0)
   border-bottom: 1px solid var(--ov-border-subtle);
   flex-shrink: 0;
 }
+
 @media (min-width: 640px) {
-  .ov-chart-header { flex-direction: row; align-items: center; justify-content: space-between; }
+  .ov-chart-header {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
 }
 
-.ov-chart-title { font-size: 15px; font-weight: 700; letter-spacing: -0.02em; color: var(--ov-text-primary); margin: 0; }
-.ov-chart-subtitle { font-size: 12px; color: var(--ov-text-secondary); margin: 2px 0 0; }
-.ov-chart-legend { display: flex; align-items: center; gap: 16px; font-size: 12px; flex-shrink: 0; flex-wrap: wrap; }
-.ov-legend-item { display: flex; align-items: center; gap: 6px; color: var(--ov-text-secondary); }
-.ov-legend-item:last-child { color: var(--ov-text-primary); font-weight: 500; }
-.ov-legend-dot { display: inline-block; width: 12px; height: 12px; border-radius: 2px; flex-shrink: 0; }
-.ov-legend-dot--total { background-color: var(--ov-chart-total); }
-.ov-legend-dot--completed { background-color: var(--ov-chart-completed); }
+.ov-chart-title {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--ov-text-primary);
+  margin: 0;
+}
+
+.ov-chart-subtitle {
+  font-size: 12px;
+  color: var(--ov-text-secondary);
+  margin: 2px 0 0;
+}
+
+.ov-chart-legend {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 12px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.ov-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ov-text-secondary);
+}
+
+.ov-legend-item:last-child {
+  color: var(--ov-text-primary);
+  font-weight: 500;
+}
+
+.ov-legend-dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.ov-legend-dot--total {
+  background-color: var(--ov-chart-total);
+}
+
+.ov-legend-dot--completed {
+  background-color: var(--ov-chart-completed);
+}
 
 /* Chart body */
 .ov-chart-body {
@@ -180,11 +299,23 @@ const hasActivity = computed(() => months.value.some((month) => month.total > 0)
   color: var(--ov-text-muted);
   border-right: 1px solid var(--ov-border-subtle);
 }
-.ov-y-mid { display: none; }
-.ov-y-250 { display: block; }
+
+.ov-y-mid {
+  display: none;
+}
+
+.ov-y-250 {
+  display: block;
+}
+
 @media (min-width: 640px) {
-  .ov-y-mid { display: block; }
-  .ov-y-250 { display: none; }
+  .ov-y-mid {
+    display: block;
+  }
+
+  .ov-y-250 {
+    display: none;
+  }
 }
 
 /* Chart plot */
@@ -210,11 +341,15 @@ const hasActivity = computed(() => months.value.some((month) => month.total > 0)
   pointer-events: none;
   z-index: 0;
 }
+
 .ov-grid-line {
   width: 100%;
   border-bottom: 1px dashed var(--ov-border-subtle);
 }
-.ov-grid-line--solid { border-bottom-style: solid; }
+
+.ov-grid-line--solid {
+  border-bottom-style: solid;
+}
 
 /* Bars */
 .ov-bars {
@@ -227,8 +362,18 @@ const hasActivity = computed(() => months.value.some((month) => month.total > 0)
   align-items: end;
   padding-bottom: 0;
 }
-@media (min-width: 640px) { .ov-bars { gap: 16px; } }
-@media (min-width: 768px) { .ov-bars { gap: 24px; } }
+
+@media (min-width: 640px) {
+  .ov-bars {
+    gap: 16px;
+  }
+}
+
+@media (min-width: 768px) {
+  .ov-bars {
+    gap: 24px;
+  }
+}
 
 .ov-bar-group {
   display: flex;
@@ -248,7 +393,12 @@ const hasActivity = computed(() => months.value.some((month) => month.total > 0)
   width: 100%;
   height: 165px;
 }
-@media (min-width: 640px) { .ov-bar-pair { gap: 4px; } }
+
+@media (min-width: 640px) {
+  .ov-bar-pair {
+    gap: 4px;
+  }
+}
 
 .ov-bar {
   border-radius: 2px 2px 0 0;
@@ -256,15 +406,36 @@ const hasActivity = computed(() => months.value.some((month) => month.total > 0)
   min-width: 0;
   flex-shrink: 0;
 }
-.ov-bar--total { background-color: var(--ov-chart-total); width: 10px; }
-.ov-bar--completed { background-color: var(--ov-chart-completed); width: 10px; }
+
+.ov-bar--total {
+  background-color: var(--ov-chart-total);
+  width: 10px;
+}
+
+.ov-bar--completed {
+  background-color: var(--ov-chart-completed);
+  width: 10px;
+}
+
 @media (min-width: 640px) {
-  .ov-bar--total, .ov-bar--completed { width: 16px; }
+
+  .ov-bar--total,
+  .ov-bar--completed {
+    width: 16px;
+  }
 }
+
 @media (min-width: 768px) {
-  .ov-bar--total, .ov-bar--completed { width: 22px; }
+
+  .ov-bar--total,
+  .ov-bar--completed {
+    width: 22px;
+  }
 }
-.ov-bar:hover { opacity: 0.8; }
+
+.ov-bar:hover {
+  opacity: 0.8;
+}
 
 .ov-bar-label {
   text-align: center;
@@ -272,6 +443,7 @@ const hasActivity = computed(() => months.value.some((month) => month.total > 0)
   min-width: 0;
   padding-bottom: 4px;
 }
+
 .ov-bar-month {
   display: block;
   font-size: 11px;
@@ -281,10 +453,27 @@ const hasActivity = computed(() => months.value.some((month) => month.total > 0)
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-@media (min-width: 640px) { .ov-bar-month { font-size: 12px; } }
-.ov-bar-month--current { color: var(--ov-brand); }
-.ov-bar-month-suffix { display: none; }
-@media (min-width: 640px) { .ov-bar-month-suffix { display: inline; } }
+
+@media (min-width: 640px) {
+  .ov-bar-month {
+    font-size: 12px;
+  }
+}
+
+.ov-bar-month--current {
+  color: var(--ov-brand);
+}
+
+.ov-bar-month-suffix {
+  display: none;
+}
+
+@media (min-width: 640px) {
+  .ov-bar-month-suffix {
+    display: inline;
+  }
+}
+
 .ov-bar-values {
   display: none;
   font-size: 10px;
@@ -294,6 +483,15 @@ const hasActivity = computed(() => months.value.some((month) => month.total > 0)
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-@media (min-width: 640px) { .ov-bar-values { display: block; } }
-.ov-bar-values--current { color: var(--ov-brand); font-weight: 500; }
+
+@media (min-width: 640px) {
+  .ov-bar-values {
+    display: block;
+  }
+}
+
+.ov-bar-values--current {
+  color: var(--ov-brand);
+  font-weight: 500;
+}
 </style>

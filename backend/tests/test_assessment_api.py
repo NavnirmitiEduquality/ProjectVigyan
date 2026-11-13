@@ -71,7 +71,7 @@ def assessment_api_setup():
         roll_no=1,
         class_division_id=division.id,
         status="ACTIVE",
-        data_origin="TEST",
+        data_origin="PRODUCTION",
     )
     second_student = Student(
         student_code=f"AA-S2-{suffix}",
@@ -80,7 +80,7 @@ def assessment_api_setup():
         roll_no=2,
         class_division_id=division.id,
         status="ACTIVE",
-        data_origin="TEST",
+        data_origin="PRODUCTION",
     )
     other_student = Student(
         student_code=f"AA-OS-{suffix}",
@@ -307,7 +307,6 @@ def import_rows(context, token, assessment_id, rows):
 def standard_row(context, student, marks="10"):
     return {
         "student_business_id": student.student_code,
-        "student_name": student.full_name,
         "class": "5",
         "division": "A",
         "aggregate_marks": marks,
@@ -340,88 +339,115 @@ def test_unauthenticated_and_read_only_access(assessment_api_setup):
     assert create_assessment(context, viewer_token).status_code == 403
 
 
-def test_manager_workflow_acknowledges_missing_warning_and_locks(assessment_api_setup):
+def test_manager_workflow_corrects_missing_student_and_locks(
+    assessment_api_setup,
+):
     context = assessment_api_setup
     production_student = add_production_roster_student(context)
     context["db"].commit()
     token = login(context["manager"])
     viewer_token = login(context["viewer"])
+
     created = create_assessment(context, token)
     assert created.status_code == 201, created.text
     assessment_id = created.json()["id"]
+
     assert client.get(
         "/api/v1/assessments",
         headers=headers(viewer_token),
     ).status_code == 200
+
     assert client.get(
         f"/api/v1/assessments/{assessment_id}",
         headers=headers(viewer_token),
     ).status_code == 200
+
     duplicate = create_assessment(context, token)
     assert duplicate.status_code == 400
 
-    imported = client.post(
-        f"/api/v1/assessments/{assessment_id}/imports",
-        headers=headers(token),
-        json={"rows": [{
-            "student_business_id": context["student_code"],
-            "student_name": "Source Name May Differ",
-            "class": "5",
-            "division": "A",
-            "aggregate_marks": "15",
-        }]},
+    imported = import_rows(
+        context,
+        token,
+        assessment_id,
+        [
+            standard_row(context, context["student"], "15"),
+            standard_row(context, context["second_student"], "14"),
+            {
+                "student_business_id": "UNKNOWN-MISSING-STUDENT",
+                "class": "5",
+                "division": "A",
+                "aggregate_marks": "12",
+            },
+        ],
     )
     assert imported.status_code == 201, imported.text
+
     assert client.post(
         f"/api/v1/assessments/{assessment_id}/imports",
         headers=headers(viewer_token),
         json={"rows": []},
     ).status_code == 403
+
     missing_row = next(
         row for row in imported.json()["rows"]
-        if row["validation_message"] == "Student is missing from the import."
+        if row["student_business_id"] == production_student.student_code
     )
-    assert client.post(
+    assert missing_row["validation_status"] == "ERROR"
+    assert missing_row["is_mapped"] is False
+
+    correction_row = next(
+        row for row in imported.json()["rows"]
+        if row["student_business_id"] == "UNKNOWN-MISSING-STUDENT"
+    )
+    assert correction_row["validation_status"] == "WARNING"
+
+    blocked = client.post(
         f"/api/v1/assessments/{assessment_id}/submit",
         headers=headers(token),
-    ).status_code == 400
-    acknowledged = client.patch(
+    )
+    assert blocked.status_code == 400
+
+    acknowledge = client.patch(
         f"/api/v1/assessments/imports/rows/{missing_row['id']}/acknowledge",
         headers=headers(token),
     )
-    assert acknowledged.status_code == 200, acknowledged.text
-    assert client.patch(
-        f"/api/v1/assessments/imports/rows/{missing_row['id']}/mapping",
-        headers=headers(viewer_token),
-        json={
-            "student_id": str(context["student"].id),
-            "acknowledge_warning": True,
-        },
-    ).status_code == 403
+    assert acknowledge.status_code == 400
+
+    corrected = client.patch(
+        f"/api/v1/assessments/imports/rows/{correction_row['id']}/business-id",
+        headers=headers(token),
+        json={"student_business_id": production_student.student_code},
+    )
+    assert corrected.status_code == 200, corrected.text
+    assert corrected.json()["student_id"] == str(production_student.id)
+    assert corrected.json()["is_mapped"] is True
+
     submitted = client.post(
         f"/api/v1/assessments/{assessment_id}/submit",
         headers=headers(token),
     )
     assert submitted.status_code == 200, submitted.text
     assert submitted.json()["status"] == "SUBMITTED"
+
     results = client.get(
         f"/api/v1/assessments/{assessment_id}/results",
         headers=headers(viewer_token),
     )
     assert results.status_code == 200
-    assert len(results.json()) == 1
+    assert len(results.json()) == 3
 
-    assert client.post(
+    locked_import = client.post(
         f"/api/v1/assessments/{assessment_id}/imports",
         headers=headers(token),
         json={"rows": [{
             "student_business_id": context["student_code"],
-            "student_name": "Locked",
             "class": "5",
             "division": "A",
             "aggregate_marks": "1",
         }]},
-    ).status_code == 409
+    )
+    assert locked_import.status_code == 409
+
 
 
 def test_permissions_and_school_scope(assessment_api_setup):
@@ -470,7 +496,7 @@ def test_complete_roster_has_no_missing_student_warning(assessment_api_setup):
     )
 
 
-def test_partial_roster_generates_missing_student_warning(assessment_api_setup):
+def test_partial_roster_generates_missing_student_error(assessment_api_setup):
     context = assessment_api_setup
     production_student = add_production_roster_student(context)
     context["db"].commit()
@@ -484,9 +510,7 @@ def test_partial_roster_generates_missing_student_warning(assessment_api_setup):
         context,
         token,
         assessment_id,
-        [
-            standard_row(context, context["student"], "10"),
-        ],
+        [standard_row(context, context["student"], "10")],
     )
 
     assert imported.status_code == 201, imported.text
@@ -496,8 +520,7 @@ def test_partial_roster_generates_missing_student_warning(assessment_api_setup):
     missing_rows = [
         row
         for row in body["rows"]
-        if row["validation_message"]
-        == "Student is missing from the import."
+        if row["student_business_id"] == production_student.student_code
     ]
 
     assert len(missing_rows) == 1
@@ -506,10 +529,19 @@ def test_partial_roster_generates_missing_student_warning(assessment_api_setup):
 
     assert missing_row["student_id"] is None
     assert missing_row["is_mapped"] is False
+    assert missing_row["validation_status"] == "ERROR"
     assert missing_row["warning_acknowledged"] is False
+    assert body["error_count"] >= 1
+
+    submitted = client.post(
+        f"/api/v1/assessments/{assessment_id}/submit",
+        headers=headers(token),
+    )
+    assert submitted.status_code == 400
 
 
-def test_acknowledged_missing_student_is_not_inserted_as_result(
+
+def test_missing_student_error_cannot_be_acknowledged_or_submitted(
     assessment_api_setup,
 ):
     context = assessment_api_setup
@@ -525,9 +557,7 @@ def test_acknowledged_missing_student_is_not_inserted_as_result(
         context,
         token,
         assessment_id,
-        [
-            standard_row(context, context["student"], "10"),
-        ],
+        [standard_row(context, context["student"], "10")],
     )
 
     assert imported.status_code == 201, imported.text
@@ -535,24 +565,24 @@ def test_acknowledged_missing_student_is_not_inserted_as_result(
     missing_row = next(
         row
         for row in imported.json()["rows"]
-        if row["validation_message"]
-        == "Student is missing from the import."
+        if row["student_business_id"] == production_student.student_code
     )
+
+    assert missing_row["validation_status"] == "ERROR"
 
     acknowledged = client.patch(
         f"/api/v1/assessments/imports/rows/{missing_row['id']}/acknowledge",
         headers=headers(token),
     )
 
-    assert acknowledged.status_code == 200, acknowledged.text
-    assert acknowledged.json()["warning_acknowledged"] is True
+    assert acknowledged.status_code == 400, acknowledged.text
 
     submitted = client.post(
         f"/api/v1/assessments/{assessment_id}/submit",
         headers=headers(token),
     )
 
-    assert submitted.status_code == 200, submitted.text
+    assert submitted.status_code == 400, submitted.text
 
     results = client.get(
         f"/api/v1/assessments/{assessment_id}/results",
@@ -560,15 +590,11 @@ def test_acknowledged_missing_student_is_not_inserted_as_result(
     )
 
     assert results.status_code == 200, results.text
-
-    result_rows = results.json()
-
-    assert len(result_rows) == 1
-    assert result_rows[0]["student_id"] == str(context["student"].id)
-    assert result_rows[0]["student_id"] != str(context["second_student"].id)
+    assert results.json() == []
 
 
-def test_unknown_student_can_be_manually_mapped_via_api(
+
+def test_unknown_student_business_id_can_be_corrected_via_api(
     assessment_api_setup,
 ):
     context = assessment_api_setup
@@ -582,48 +608,41 @@ def test_unknown_student_can_be_manually_mapped_via_api(
         context,
         token,
         assessment_id,
-        [
-            {
-                "student_business_id": "UNKNOWN-API-STUDENT",
-                "student_name": context["student"].full_name,
-                "class": "5",
-                "division": "A",
-                "aggregate_marks": "10",
-            },
-        ],
+        [{
+            "student_business_id": "UNKNOWN-API-STUDENT",
+            "class": "5",
+            "division": "A",
+            "aggregate_marks": "10",
+        }],
     )
 
     assert imported.status_code == 201, imported.text
 
     row = next(
-        row
-        for row in imported.json()["rows"]
+        row for row in imported.json()["rows"]
         if row["student_business_id"] == "UNKNOWN-API-STUDENT"
     )
 
     assert row["is_mapped"] is False
     assert row["validation_status"] == "WARNING"
 
-    mapped = client.patch(
-        f"/api/v1/assessments/imports/rows/{row['id']}/mapping",
+    corrected = client.patch(
+        f"/api/v1/assessments/imports/rows/{row['id']}/business-id",
         headers=headers(token),
-        json={
-            "student_id": str(context["student"].id),
-            "acknowledge_warning": True,
-        },
+        json={"student_business_id": context["student_code"]},
     )
 
-    assert mapped.status_code == 200, mapped.text
+    assert corrected.status_code == 200, corrected.text
 
-    body = mapped.json()
-
+    body = corrected.json()
+    assert body["student_business_id"] == context["student_code"]
     assert body["student_id"] == str(context["student"].id)
     assert body["is_mapped"] is True
-    assert body["validation_status"] == "MAPPED"
-    assert body["warning_acknowledged"] is True
+    assert body["validation_status"] == "VALID"
+    assert body["validation_message"] is None
 
 
-def test_mapped_student_with_missing_marks_cannot_submit(
+def test_manual_mapping_rejects_business_id_mismatch(
     assessment_api_setup,
 ):
     context = assessment_api_setup
@@ -637,23 +656,19 @@ def test_mapped_student_with_missing_marks_cannot_submit(
         context,
         token,
         assessment_id,
-        [
-            {
-                "student_business_id": "UNKNOWN-MISSING-MARKS",
-                "student_name": context["student"].full_name,
-                "class": "5",
-                "division": "A",
-                "aggregate_marks": "10",
-            },
-        ],
+        [{
+            "student_business_id": "UNKNOWN-API-STUDENT",
+            "class": "5",
+            "division": "A",
+            "aggregate_marks": "10",
+        }],
     )
 
     assert imported.status_code == 201, imported.text
 
     row = next(
-        row
-        for row in imported.json()["rows"]
-        if row["student_business_id"] == "UNKNOWN-MISSING-MARKS"
+        row for row in imported.json()["rows"]
+        if row["student_business_id"] == "UNKNOWN-API-STUDENT"
     )
 
     mapped = client.patch(
@@ -665,26 +680,51 @@ def test_mapped_student_with_missing_marks_cannot_submit(
         },
     )
 
-    assert mapped.status_code == 200, mapped.text
+    assert mapped.status_code == 400
+    assert "does not match" in mapped.json()["detail"]
 
-    # Clear the marks through the service contract's HTTP surface is not
-    # currently possible because RowMarksInput requires a Decimal >= 0.
-    #
-    # Therefore this API-level case must be verified through an import
-    # containing no marks, followed by manual mapping.
-    #
-    # The initial import itself creates an ERROR because marks are required,
-    # so submission must fail.
-    created2 = create_assessment(
+
+
+def test_exact_business_id_with_missing_marks_cannot_submit(
+    assessment_api_setup,
+):
+    context = assessment_api_setup
+    token = login(context["manager"])
+
+    created = create_assessment(context, token)
+    assert created.status_code == 201, created.text
+    assessment_id = created.json()["id"]
+
+    imported = import_rows(
         context,
         token,
-        school_id=context["school"].id,
+        assessment_id,
+        [{
+            "student_business_id": context["student_code"],
+            "class": "5",
+            "division": "A",
+        }],
     )
 
-    # The helper creates BASELINE, so the duplicate BASELINE is expected
-    # to fail. This assertion intentionally confirms that assessment
-    # creation rules remain enforced.
-    assert created2.status_code == 400
+    assert imported.status_code == 201, imported.text
+
+    row = next(
+        row
+        for row in imported.json()["rows"]
+        if row["student_business_id"] == context["student_code"]
+    )
+
+    assert row["aggregate_marks"] is None
+    assert row["validation_status"] == "ERROR"
+    assert row["validation_message"] == "aggregate_marks is required."
+
+    submitted = client.post(
+        f"/api/v1/assessments/{assessment_id}/submit",
+        headers=headers(token),
+    )
+
+    assert submitted.status_code == 400
+
 
 
 def test_marks_above_maximum_are_rejected_by_api(assessment_api_setup):
@@ -702,7 +742,6 @@ def test_marks_above_maximum_are_rejected_by_api(assessment_api_setup):
         [
             {
                 "student_business_id": context["student_code"],
-                "student_name": context["student"].full_name,
                 "class": "5",
                 "division": "A",
                 "aggregate_marks": "21",
@@ -731,7 +770,7 @@ def test_marks_above_maximum_are_rejected_by_api(assessment_api_setup):
     assert submitted.status_code == 400
 
 
-def test_duplicate_student_mapping_is_rejected_by_api(
+def test_duplicate_student_business_ids_are_rejected_by_api(
     assessment_api_setup,
 ):
     context = assessment_api_setup
@@ -746,59 +785,35 @@ def test_duplicate_student_mapping_is_rejected_by_api(
         token,
         assessment_id,
         [
-            {
-                "student_business_id": "UNKNOWN-1",
-                "student_name": context["student"].full_name,
-                "class": "5",
-                "division": "A",
-                "aggregate_marks": "10",
-            },
-            {
-                "student_business_id": "UNKNOWN-2",
-                "student_name": context["student"].full_name,
-                "class": "5",
-                "division": "A",
-                "aggregate_marks": "12",
-            },
+            standard_row(context, context["student"], "10"),
+            standard_row(context, context["student"], "12"),
+            standard_row(context, context["second_student"], "11"),
         ],
     )
 
     assert imported.status_code == 201, imported.text
 
-    first_row = next(
+    body = imported.json()
+    duplicate_rows = [
         row
-        for row in imported.json()["rows"]
-        if row["student_business_id"] == "UNKNOWN-1"
-    )
+        for row in body["rows"]
+        if row["student_business_id"] == context["student_code"]
+    ]
 
-    second_row = next(
-        row
-        for row in imported.json()["rows"]
-        if row["student_business_id"] == "UNKNOWN-2"
+    assert len(duplicate_rows) == 2
+    assert any(
+        row["validation_status"] == "ERROR"
+        for row in duplicate_rows
     )
+    assert body["error_count"] >= 1
 
-    first_mapping = client.patch(
-        f"/api/v1/assessments/imports/rows/{first_row['id']}/mapping",
+    submitted = client.post(
+        f"/api/v1/assessments/{assessment_id}/submit",
         headers=headers(token),
-        json={
-            "student_id": str(context["student"].id),
-            "acknowledge_warning": True,
-        },
     )
 
-    assert first_mapping.status_code == 200, first_mapping.text
+    assert submitted.status_code == 400
 
-    duplicate_mapping = client.patch(
-        f"/api/v1/assessments/imports/rows/{second_row['id']}/mapping",
-        headers=headers(token),
-        json={
-            "student_id": str(context["student"].id),
-            "acknowledge_warning": True,
-        },
-    )
-
-    assert duplicate_mapping.status_code == 400
-    assert "one result per assessment" in duplicate_mapping.json()["detail"]
 
 
 def test_viewer_cannot_acknowledge_update_or_map(
@@ -819,7 +834,6 @@ def test_viewer_cannot_acknowledge_update_or_map(
         [
             {
                 "student_business_id": "UNKNOWN-VIEWER-TEST",
-                "student_name": context["student"].full_name,
                 "class": "5",
                 "division": "A",
                 "aggregate_marks": "10",
@@ -919,7 +933,6 @@ def test_import_with_missing_marks_cannot_submit(
         [
             {
                 "student_business_id": context["student_code"],
-                "student_name": context["student"].full_name,
                 "class": "5",
                 "division": "A",
                 # Deliberately omitted.
@@ -998,3 +1011,192 @@ def test_import_requires_explicit_assessment_scope(assessment_api_setup):
         [standard_row(context, context["student"], "10")],
     )
     assert imported.status_code == 400, imported.text
+
+
+def test_csv_import_accepts_utf8_and_bom(assessment_api_setup):
+    context = assessment_api_setup
+    token = login(context["manager"])
+    created = create_assessment(context, token)
+    assert created.status_code == 201, created.text
+
+    csv_content = (
+        "\ufeffstudent_business_id,class,division,aggregate_marks\n"
+        f"{context['student_code']},5,A,10\n"
+        f"{context['second_student'].student_code},5,A,12\n"
+    )
+
+    response = client.post(
+        f"/api/v1/assessments/{created.json()['id']}/imports/csv",
+        headers=headers(token),
+        files={"file": ("assessment.csv", csv_content.encode("utf-8"), "text/csv")},
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["total_rows"] == 2
+    assert body["error_count"] == 0
+    assert body["warning_count"] == 0
+    assert {row["student_business_id"] for row in body["rows"]} == {
+        context["student_code"],
+        context["second_student"].student_code,
+    }
+
+
+@pytest.mark.parametrize(
+    ("csv_content", "expected_detail"),
+    [
+        (
+            "student_business_id,student_business_id,class,division,aggregate_marks\n"
+            "A,A,5,A,10\n",
+            "Duplicate CSV headers",
+        ),
+        (
+            "student_business_id,class,aggregate_marks\n"
+            "A,5,10\n",
+            "Missing required headers",
+        ),
+        (
+            "student_business_id,class,division,aggregate_marks,student_name\n"
+            "A,5,A,10,Name\n",
+            "Unexpected headers",
+        ),
+    ],
+)
+def test_csv_import_rejects_invalid_headers(
+    assessment_api_setup, csv_content, expected_detail
+):
+    context = assessment_api_setup
+    token = login(context["manager"])
+    created = create_assessment(context, token)
+    assert created.status_code == 201, created.text
+
+    response = client.post(
+        f"/api/v1/assessments/{created.json()['id']}/imports/csv",
+        headers=headers(token),
+        files={"file": ("assessment.csv", csv_content.encode(), "text/csv")},
+    )
+
+    assert response.status_code == 400
+    assert expected_detail in response.json()["detail"]
+
+
+def test_csv_import_rejects_malformed_row_width(assessment_api_setup):
+    context = assessment_api_setup
+    token = login(context["manager"])
+    created = create_assessment(context, token)
+    assert created.status_code == 201, created.text
+
+    csv_content = (
+        "student_business_id,class,division,aggregate_marks\n"
+        f"{context['student_code']},5,A\n"
+    )
+
+    response = client.post(
+        f"/api/v1/assessments/{created.json()['id']}/imports/csv",
+        headers=headers(token),
+        files={"file": ("assessment.csv", csv_content.encode(), "text/csv")},
+    )
+
+    assert response.status_code == 400
+    assert "Malformed CSV row at line 2" in response.json()["detail"]
+
+
+def test_csv_import_rejects_file_over_5_mib(assessment_api_setup):
+    context = assessment_api_setup
+    token = login(context["manager"])
+    created = create_assessment(context, token)
+    assert created.status_code == 201, created.text
+
+    oversized_content = b"x" * (5 * 1024 * 1024 + 1)
+
+    response = client.post(
+        f"/api/v1/assessments/{created.json()['id']}/imports/csv",
+        headers=headers(token),
+        files={"file": ("assessment.csv", oversized_content, "text/csv")},
+    )
+
+    assert response.status_code == 413
+    assert "5 MiB" in response.json()["detail"]
+
+
+def test_viewer_cannot_upload_assessment_csv(assessment_api_setup):
+    context = assessment_api_setup
+    manager_token = login(context["manager"])
+    viewer_token = login(context["viewer"])
+    created = create_assessment(context, manager_token)
+    assert created.status_code == 201, created.text
+
+    response = client.post(
+        f"/api/v1/assessments/{created.json()['id']}/imports/csv",
+        headers=headers(viewer_token),
+        files={
+            "file": (
+                "assessment.csv",
+                b"student_business_id,class,division,aggregate_marks\n",
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("csv_content", "expected_detail"),
+    [
+        (b"\xff\xfe\xfa", "CSV must use UTF-8 encoding."),
+        (b"", "CSV file is empty or has no header row."),
+        (
+            b"student_business_id,class,division,aggregate_marks\n",
+            "CSV contains no data rows.",
+        ),
+    ],
+)
+def test_csv_import_rejects_invalid_encoding_or_empty_content(
+    assessment_api_setup, csv_content, expected_detail
+):
+    context = assessment_api_setup
+    token = login(context["manager"])
+    created = create_assessment(context, token)
+    assert created.status_code == 201, created.text
+
+    response = client.post(
+        f"/api/v1/assessments/{created.json()['id']}/imports/csv",
+        headers=headers(token),
+        files={"file": ("assessment.csv", csv_content, "text/csv")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == expected_detail
+
+
+def test_csv_import_flags_duplicate_student_business_ids(assessment_api_setup):
+    context = assessment_api_setup
+    token = login(context["manager"])
+    created = create_assessment(context, token)
+    assert created.status_code == 201, created.text
+
+    csv_content = (
+        "student_business_id,class,division,aggregate_marks\n"
+        f"{context['student_code']},5,A,10\n"
+        f"{context['student_code']},5,A,12\n"
+        f"{context['second_student'].student_code},5,A,11\n"
+    )
+
+    response = client.post(
+        f"/api/v1/assessments/{created.json()['id']}/imports/csv",
+        headers=headers(token),
+        files={"file": ("assessment.csv", csv_content.encode(), "text/csv")},
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    duplicate_rows = [
+        row for row in body["rows"]
+        if row["student_business_id"] == context["student_code"]
+    ]
+
+    assert len(duplicate_rows) == 2
+    assert any(row["validation_status"] == "ERROR" for row in duplicate_rows)
+    assert body["error_count"] >= 1

@@ -1,8 +1,10 @@
+import csv
+import io
 from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
@@ -53,7 +55,6 @@ class AssessmentCreate(BaseModel):
 
 class ImportRowInput(BaseModel):
     student_business_id: str | None = Field(default=None, max_length=30)
-    student_name: str = Field(min_length=1, max_length=150)
     class_: str = Field(alias="class", min_length=1, max_length=20)
     division: str = Field(min_length=1, max_length=20)
     aggregate_marks: Decimal | None = None
@@ -78,6 +79,11 @@ class RowMarksInput(BaseModel):
     aggregate_marks: Decimal = Field(ge=0)
 
 
+
+class RowBusinessIdInput(BaseModel):
+    student_business_id: str = Field(min_length=1, max_length=30)
+
+
 class AssessmentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -98,7 +104,6 @@ class ImportRowResponse(BaseModel):
     id: UUID
     row_number: int
     student_business_id: str | None
-    source_student_name: str
     source_class: str | None
     source_division: str | None
     aggregate_marks: Decimal | None
@@ -236,6 +241,122 @@ def import_assessment_rows(
         _raise_domain_error(error)
 
 
+MAX_ASSESSMENT_CSV_BYTES = 5 * 1024 * 1024
+ASSESSMENT_CSV_HEADERS = {
+    "student_business_id",
+    "class",
+    "division",
+    "aggregate_marks",
+}
+
+
+@router.post(
+    "/{assessment_id}/imports/csv",
+    response_model=AssessmentImportResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def import_assessment_csv(
+    assessment_id: UUID,
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_permission("assessment.import")),
+    db: Session = Depends(get_db),
+):
+    assessment = _get_assessment_or_404(db, assessment_id)
+    require_school_access(assessment.school_id, current_user, db)
+
+    contents = await file.read(MAX_ASSESSMENT_CSV_BYTES + 1)
+    if len(contents) > MAX_ASSESSMENT_CSV_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="CSV file exceeds the 5 MiB size limit.",
+        )
+
+    try:
+        decoded = contents.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CSV must use UTF-8 encoding.",
+        )
+
+    try:
+        reader = csv.reader(io.StringIO(decoded, newline=""), strict=True)
+        headers = next(reader, None)
+
+        if not headers:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="CSV file is empty or has no header row.",
+            )
+
+        duplicates = sorted({
+            header for header in headers if headers.count(header) > 1
+        })
+        if duplicates:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Duplicate CSV headers: {', '.join(duplicates)}.",
+            )
+
+        missing = sorted(ASSESSMENT_CSV_HEADERS - set(headers))
+        unexpected = sorted(set(headers) - ASSESSMENT_CSV_HEADERS)
+        if missing or unexpected:
+            details = []
+            if missing:
+                details.append(f"Missing required headers: {', '.join(missing)}")
+            if unexpected:
+                details.append(f"Unexpected headers: {', '.join(unexpected)}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="; ".join(details) + ".",
+            )
+
+        rows = []
+        for values in reader:
+            if not values:
+                continue
+            if len(values) != len(headers):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Malformed CSV row at line {reader.line_num}: "
+                        f"expected {len(headers)} columns, found {len(values)}."
+                    ),
+                )
+            row = dict(zip(headers, values))
+            rows.append({
+                "student_business_id": row["student_business_id"],
+                "class": row["class"],
+                "division": row["division"],
+                "aggregate_marks": row["aggregate_marks"],
+            })
+
+    except csv.Error as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Malformed CSV file: {error}.",
+        )
+
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CSV contains no data rows.",
+        )
+
+    try:
+        import_record = AssessmentService(db).import_rows(
+            assessment_id=assessment_id,
+            created_by_user_id=current_user.id,
+            rows=rows,
+        )
+        db.commit()
+        db.refresh(import_record)
+        return import_record
+    except AssessmentDomainError as error:
+        db.rollback()
+        _raise_domain_error(error)
+
+
 @router.patch("/imports/rows/{row_id}/mapping", response_model=ImportRowResponse)
 def map_import_row(
     row_id: UUID,
@@ -252,6 +373,30 @@ def map_import_row(
             import_row_id=row_id,
             student_id=payload.student_id,
             acknowledge_warning=payload.acknowledge_warning,
+        )
+        db.commit()
+        db.refresh(result)
+        return result
+    except AssessmentDomainError as error:
+        db.rollback()
+        _raise_domain_error(error)
+
+
+@router.patch("/imports/rows/{row_id}/business-id", response_model=ImportRowResponse)
+def correct_import_row_business_id(
+    row_id: UUID,
+    payload: RowBusinessIdInput,
+    current_user: User = Depends(require_permission("assessment.update")),
+    db: Session = Depends(get_db),
+):
+    row = db.get(AssessmentImportRow, row_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Import row not found.")
+    require_school_access(row.assessment_import.assessment.school_id, current_user, db)
+    try:
+        result = AssessmentService(db).update_row_student_business_id(
+            import_row_id=row_id,
+            student_business_id=payload.student_business_id,
         )
         db.commit()
         db.refresh(result)

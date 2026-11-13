@@ -64,7 +64,7 @@ def assessment_context():
             roll_no=index,
             class_division_id=division.id,
             status="ACTIVE",
-            data_origin="TEST",
+            data_origin="PRODUCTION",
         )
         for index in (1, 2)
     ]
@@ -263,141 +263,139 @@ def test_import_validation_and_counts(assessment_context):
         rows=[
             {
                 "student_business_id": assessment_context["students"][0].student_code,
-                "student_name": "Different Source Name",
                 "class": "5",
                 "division": "A",
                 "aggregate_marks": "19",
             },
             {
                 "student_business_id": "UNKNOWN",
-                "student_name": "Unmatched Student",
                 "class": "5",
                 "division": "A",
                 "aggregate_marks": "21",
             },
             {
                 "student_business_id": assessment_context["students"][0].student_code,
-                "student_name": "Duplicate Student",
                 "class": "5",
                 "division": "A",
                 "aggregate_marks": "10",
             },
             {
                 "student_business_id": None,
-                "student_name": "No Business ID",
                 "class": "5",
                 "division": "A",
                 "aggregate_marks": "10",
             },
         ],
     )
-    assert imported.error_count == 2
-    assert imported.warning_count == 1
+    assert imported.error_count == 4
+    assert imported.warning_count == 0
     assert any(row.validation_status == "VALID" for row in imported.rows)
-    assert any(row.validation_status == "WARNING" for row in imported.rows)
+    assert all(
+        row.validation_status != "WARNING"
+        for row in imported.rows
+    )
 
 
-def test_manual_mapping_and_warning_acknowledgement(assessment_context):
+def test_manual_mapping_requires_exact_business_id(assessment_context):
     assessment = create_assessment(assessment_context)
     service = AssessmentService(assessment_context["db"])
+
     imported = service.import_rows(
         assessment_id=assessment.id,
         created_by_user_id=assessment_context["user"].id,
         rows=[{
             "student_business_id": "UNKNOWN",
-            "student_name": "Needs Mapping",
             "class": "5",
             "division": "A",
             "aggregate_marks": "10",
         }],
     )
-    row = imported.rows[0]
-    mapped = service.map_row(
-        import_row_id=row.id,
-        student_id=assessment_context["students"][1].id,
-        acknowledge_warning=True,
-    )
-    assert mapped.is_mapped is True
-    assert mapped.validation_status == "MAPPED"
-    assert mapped.warning_acknowledged is True
 
-    with pytest.raises(AssessmentValidationError):
+    row = next(
+        row for row in imported.rows
+        if row.student_business_id == "UNKNOWN"
+    )
+
+    with pytest.raises(AssessmentValidationError, match="does not match"):
         service.map_row(
             import_row_id=row.id,
-            student_id=assessment_context["other_student"].id,
+            student_id=assessment_context["students"][1].id,
             acknowledge_warning=True,
         )
+
+    corrected = service.update_row_student_business_id(
+        import_row_id=row.id,
+        student_business_id=assessment_context["students"][1].student_code,
+    )
+
+    assert corrected.student_id == assessment_context["students"][1].id
+    assert corrected.is_mapped is True
+    assert corrected.validation_status == "VALID"
+    assert corrected.warning_acknowledged is False
 
 
 def test_marks_and_submission_locking(assessment_context):
     assessment = create_assessment(assessment_context, maximum_marks=10)
     service = AssessmentService(assessment_context["db"])
-    production_student = add_production_roster_student(
-        assessment_context
-    )
-    service = AssessmentService(assessment_context["db"])
+
     imported = service.import_rows(
         assessment_id=assessment.id,
         created_by_user_id=assessment_context["user"].id,
-        rows=[{
-            "student_business_id": assessment_context["students"][0].student_code,
-            "student_name": "Student",
-            "class": "5",
-            "division": "A",
-            "aggregate_marks": "5",
-        }],
+        rows=[
+            {
+                "student_business_id": student.student_code,
+                "class": "5",
+                "division": "A",
+                "aggregate_marks": str(5 + index),
+            }
+            for index, student in enumerate(assessment_context["students"])
+        ],
     )
+
+    assert imported.error_count == 0
+    assert imported.warning_count == 0
+    assert len(imported.rows) == 2
+
     row = imported.rows[0]
     corrected = service.update_row_marks(
         import_row_id=row.id,
         aggregate_marks=Decimal("10"),
     )
     assert corrected.aggregate_marks == Decimal("10")
-    with pytest.raises(AssessmentValidationError):
-        service.update_row_marks(import_row_id=row.id, aggregate_marks=Decimal("11"))
 
     with pytest.raises(AssessmentValidationError):
-        service.submit(
-            assessment_id=assessment.id,
-            submitted_by_user_id=assessment_context["user"].id,
+        service.update_row_marks(
+            import_row_id=row.id,
+            aggregate_marks=Decimal("11"),
         )
-    service.acknowledge_warning(
-        import_row_id=next(
-            item.id for item in imported.rows
-            if item.validation_message == "Student is missing from the import."
-        )
-    )
-    assert [
-        (item.validation_status, item.warning_acknowledged, item.validation_message, item.is_mapped)
-        for item in imported.rows
-    ] == [
-        ("VALID", False, None, True),
-        ("WARNING", True, "Student is missing from the import.", False),
-    ]
+
     submitted = service.submit(
         assessment_id=assessment.id,
         submitted_by_user_id=assessment_context["user"].id,
     )
     assessment_context["db"].commit()
+
     assert submitted.status == "SUBMITTED"
     assert submitted.submitted_by_user_id == assessment_context["user"].id
     assert submitted.submitted_at is not None
     assert submitted.submitted_at.tzinfo is not None
+
     assert assessment_context["db"].query(AssessmentResult).filter(
         AssessmentResult.assessment_id == assessment.id
-    ).count() == 1
+    ).count() == 2
+
     with pytest.raises(AssessmentLockedError):
         service.import_rows(
             assessment_id=assessment.id,
             created_by_user_id=assessment_context["user"].id,
             rows=[{
                 "student_business_id": assessment_context["students"][0].student_code,
-                "student_name": "Student",
                 "class": "5",
                 "division": "A",
                 "aggregate_marks": "1",
             }],
         )
+
     with pytest.raises(AssessmentLockedError):
         service.submit(
             assessment_id=assessment.id,
@@ -420,14 +418,12 @@ def test_complete_roster_has_no_missing_student_warnings(assessment_context):
         rows=[
             {
                 "student_business_id": assessment_context["students"][0].student_code,
-                "student_name": assessment_context["students"][0].full_name,
                 "class": "5",
                 "division": "A",
                 "aggregate_marks": "10",
             },
             {
                 "student_business_id": assessment_context["students"][1].student_code,
-                "student_name": assessment_context["students"][1].full_name,
                 "class": "5",
                 "division": "A",
                 "aggregate_marks": "12",
@@ -449,19 +445,16 @@ def test_complete_roster_has_no_missing_student_warnings(assessment_context):
     assert all(row.validation_status == "VALID" for row in imported.rows)
 
 
-def test_partial_roster_generates_missing_student_warnings(assessment_context):
+def test_partial_roster_generates_missing_student_errors(assessment_context):
     assessment = create_assessment(assessment_context)
     service = AssessmentService(assessment_context["db"])
-    production_student = add_production_roster_student(
-        assessment_context
-    )
+
     imported = service.import_rows(
         assessment_id=assessment.id,
         created_by_user_id=assessment_context["user"].id,
         rows=[
             {
                 "student_business_id": assessment_context["students"][0].student_code,
-                "student_name": assessment_context["students"][0].full_name,
                 "class": "5",
                 "division": "A",
                 "aggregate_marks": "10",
@@ -472,35 +465,33 @@ def test_partial_roster_generates_missing_student_warnings(assessment_context):
     missing_rows = [
         row
         for row in imported.rows
-        if row.validation_message == "Student is missing from the import."
+        if row.validation_message
+        and row.validation_message.startswith("Student is missing from the import.")
     ]
 
     assert len(missing_rows) == 1
-
     missing_row = missing_rows[0]
 
-    assert missing_row.validation_status == "WARNING"
+    assert missing_row.validation_status == "ERROR"
     assert missing_row.warning_acknowledged is False
     assert missing_row.is_mapped is False
     assert missing_row.student_id is None
-    assert missing_row.student_business_id == production_student.student_code
-    assert missing_row.source_student_name == production_student.full_name
-    assert imported.warning_count == 1
+    assert missing_row.student_business_id == assessment_context["students"][1].student_code
+    assert missing_row.source_student_name is None
+    assert imported.error_count == 1
+    assert imported.warning_count == 0
 
 
-def test_unacknowledged_missing_warning_blocks_submission(assessment_context):
+def test_missing_student_error_blocks_submission(assessment_context):
     assessment = create_assessment(assessment_context)
     service = AssessmentService(assessment_context["db"])
-    production_student = add_production_roster_student(
-        assessment_context
-    )
+
     imported = service.import_rows(
         assessment_id=assessment.id,
         created_by_user_id=assessment_context["user"].id,
         rows=[
             {
                 "student_business_id": assessment_context["students"][0].student_code,
-                "student_name": assessment_context["students"][0].full_name,
                 "class": "5",
                 "division": "A",
                 "aggregate_marks": "10",
@@ -511,10 +502,12 @@ def test_unacknowledged_missing_warning_blocks_submission(assessment_context):
     missing_row = next(
         row
         for row in imported.rows
-        if row.validation_message == "Student is missing from the import."
+        if row.validation_message
+        and row.validation_message.startswith("Student is missing from the import.")
     )
 
-    assert missing_row.warning_acknowledged is False
+    with pytest.raises(AssessmentValidationError):
+        service.acknowledge_warning(import_row_id=missing_row.id)
 
     with pytest.raises(AssessmentValidationError):
         service.submit(
@@ -525,29 +518,25 @@ def test_unacknowledged_missing_warning_blocks_submission(assessment_context):
     assert assessment.status != "SUBMITTED"
     assert assessment.submitted_by_user_id is None
     assert assessment.submitted_at is None
-
-    result_count = (
+    assert (
         assessment_context["db"]
         .query(AssessmentResult)
         .filter(AssessmentResult.assessment_id == assessment.id)
         .count()
+        == 0
     )
-    assert result_count == 0
 
 
-def test_acknowledged_missing_warning_allows_submission(assessment_context):
+def test_correcting_missing_student_marks_completes_roster(assessment_context):
     assessment = create_assessment(assessment_context)
     service = AssessmentService(assessment_context["db"])
-    production_student = add_production_roster_student(
-        assessment_context
-    )
+
     imported = service.import_rows(
         assessment_id=assessment.id,
         created_by_user_id=assessment_context["user"].id,
         rows=[
             {
                 "student_business_id": assessment_context["students"][0].student_code,
-                "student_name": assessment_context["students"][0].full_name,
                 "class": "5",
                 "division": "A",
                 "aggregate_marks": "10",
@@ -558,12 +547,21 @@ def test_acknowledged_missing_warning_allows_submission(assessment_context):
     missing_row = next(
         row
         for row in imported.rows
-        if row.validation_message == "Student is missing from the import."
+        if row.validation_message
+        and row.validation_message.startswith("Student is missing from the import.")
     )
 
-    service.acknowledge_warning(import_row_id=missing_row.id)
+    corrected = service.update_row_marks(
+        import_row_id=missing_row.id,
+        aggregate_marks=Decimal("8"),
+    )
 
-    assert missing_row.warning_acknowledged is True
+    assert corrected.is_mapped is True
+    assert corrected.student_id == assessment_context["students"][1].id
+    assert corrected.validation_status == "VALID"
+    assert corrected.validation_message is None
+    assert corrected.aggregate_marks == Decimal("8")
+    assert imported.error_count == 0
 
     submitted = service.submit(
         assessment_id=assessment.id,
@@ -572,45 +570,6 @@ def test_acknowledged_missing_warning_allows_submission(assessment_context):
 
     assert submitted.status == "SUBMITTED"
 
-
-def test_acknowledged_missing_student_does_not_create_result(assessment_context):
-    assessment = create_assessment(assessment_context)
-    service = AssessmentService(assessment_context["db"])
-    production_student = add_production_roster_student(
-        assessment_context
-    )
-    imported = service.import_rows(
-        assessment_id=assessment.id,
-        created_by_user_id=assessment_context["user"].id,
-        rows=[
-            {
-                "student_business_id": assessment_context["students"][0].student_code,
-                "student_name": assessment_context["students"][0].full_name,
-                "class": "5",
-                "division": "A",
-                "aggregate_marks": "10",
-            },
-        ],
-    )
-
-    missing_student = assessment_context["students"][1]
-
-    missing_row = next(
-        row
-        for row in imported.rows
-        if row.validation_message == "Student is missing from the import."
-    )
-
-    assert missing_row.student_id is None
-    assert missing_row.is_mapped is False
-
-    service.acknowledge_warning(import_row_id=missing_row.id)
-
-    service.submit(
-        assessment_id=assessment.id,
-        submitted_by_user_id=assessment_context["user"].id,
-    )
-
     results = (
         assessment_context["db"]
         .query(AssessmentResult)
@@ -618,23 +577,13 @@ def test_acknowledged_missing_student_does_not_create_result(assessment_context)
         .all()
     )
 
-    assert len(results) == 1
-    assert results[0].student_id == assessment_context["students"][0].id
-    assert results[0].student_id != missing_student.id
-
-    assert (
-        assessment_context["db"]
-        .query(AssessmentResult)
-        .filter(
-            AssessmentResult.assessment_id == assessment.id,
-            AssessmentResult.student_id == missing_student.id,
-        )
-        .count()
-        == 0
-    )
+    assert len(results) == 2
+    assert {result.student_id for result in results} == {
+        student.id for student in assessment_context["students"]
+    }
 
 
-def test_manual_mapping_of_unknown_student_becomes_mapped(assessment_context):
+def test_unknown_business_id_requires_exact_id_correction(assessment_context):
     assessment = create_assessment(assessment_context)
     service = AssessmentService(assessment_context["db"])
 
@@ -644,7 +593,6 @@ def test_manual_mapping_of_unknown_student_becomes_mapped(assessment_context):
         rows=[
             {
                 "student_business_id": "UNKNOWN-STUDENT",
-                "student_name": "Assessment Student 1",
                 "class": "5",
                 "division": "A",
                 "aggregate_marks": "10",
@@ -662,18 +610,27 @@ def test_manual_mapping_of_unknown_student_becomes_mapped(assessment_context):
     assert row.is_mapped is False
     assert row.student_id is None
 
-    mapped = service.map_row(
+    with pytest.raises(
+        AssessmentValidationError,
+        match="does not match",
+    ):
+        service.map_row(
+            import_row_id=row.id,
+            student_id=assessment_context["students"][0].id,
+            acknowledge_warning=True,
+        )
+
+    corrected = service.update_row_student_business_id(
         import_row_id=row.id,
-        student_id=assessment_context["students"][0].id,
-        acknowledge_warning=True,
+        student_business_id=assessment_context["students"][0].student_code,
     )
 
-    assert mapped.student_id == assessment_context["students"][0].id
-    assert mapped.class_division_id == assessment_context["division"].id
-    assert mapped.is_mapped is True
-    assert mapped.validation_status == "MAPPED"
-    assert mapped.validation_message is None
-    assert mapped.warning_acknowledged is True
+    assert corrected.student_id == assessment_context["students"][0].id
+    assert corrected.class_division_id == assessment_context["division"].id
+    assert corrected.is_mapped is True
+    assert corrected.validation_status == "VALID"
+    assert corrected.validation_message is None
+    assert corrected.warning_acknowledged is False
 
 
 def test_mapped_student_with_missing_marks_cannot_submit(assessment_context):
@@ -685,35 +642,32 @@ def test_mapped_student_with_missing_marks_cannot_submit(assessment_context):
         created_by_user_id=assessment_context["user"].id,
         rows=[
             {
-                "student_business_id": "UNKNOWN-MISSING-MARKS",
-                "student_name": assessment_context["students"][0].full_name,
+                "student_business_id": student.student_code,
                 "class": "5",
                 "division": "A",
                 "aggregate_marks": "10",
-            },
+            }
+            for student in assessment_context["students"]
         ],
     )
 
     row = imported.rows[0]
+    assert row.is_mapped is True
 
-    service.map_row(
-        import_row_id=row.id,
-        student_id=assessment_context["students"][0].id,
-        acknowledge_warning=True,
-    )
-
-    # Deliberately create an invalid staged state so submit()'s
-    # defense-in-depth validation is exercised directly.
+    # Deliberately create an invalid staged state to exercise
+    # submit() defense-in-depth validation.
     row.aggregate_marks = None
     assessment_context["db"].flush()
 
     with pytest.raises(AssessmentValidationError):
-        service.submit(assessment_id=assessment.id, submitted_by_user_id=assessment_context["user"].id)
+        service.submit(
+            assessment_id=assessment.id,
+            submitted_by_user_id=assessment_context["user"].id,
+        )
 
     assert assessment.status != "SUBMITTED"
     assert assessment.submitted_by_user_id is None
     assert assessment.submitted_at is None
-
     assert (
         assessment_context["db"]
         .query(AssessmentResult)
@@ -737,35 +691,32 @@ def test_mapped_student_with_marks_above_maximum_cannot_submit(
         created_by_user_id=assessment_context["user"].id,
         rows=[
             {
-                "student_business_id": "UNKNOWN-OVER-MAX",
-                "student_name": assessment_context["students"][0].full_name,
+                "student_business_id": student.student_code,
                 "class": "5",
                 "division": "A",
                 "aggregate_marks": "10",
-            },
+            }
+            for student in assessment_context["students"]
         ],
     )
 
     row = imported.rows[0]
+    assert row.is_mapped is True
 
-    service.map_row(
-        import_row_id=row.id,
-        student_id=assessment_context["students"][0].id,
-        acknowledge_warning=True,
-    )
-
-    # Deliberately create an invalid staged state so submit()'s
-    # defense-in-depth validation is exercised directly.
+    # Deliberately create an invalid staged state to exercise
+    # submit() defense-in-depth validation.
     row.aggregate_marks = Decimal("21")
     assessment_context["db"].flush()
 
     with pytest.raises(AssessmentValidationError):
-        service.submit(assessment_id=assessment.id, submitted_by_user_id=assessment_context["user"].id)
+        service.submit(
+            assessment_id=assessment.id,
+            submitted_by_user_id=assessment_context["user"].id,
+        )
 
     assert assessment.status != "SUBMITTED"
     assert assessment.submitted_by_user_id is None
     assert assessment.submitted_at is None
-
     assert (
         assessment_context["db"]
         .query(AssessmentResult)
@@ -778,21 +729,20 @@ def test_mapped_student_with_marks_above_maximum_cannot_submit(
 def test_duplicate_mapped_student_cannot_submit(assessment_context):
     assessment = create_assessment(assessment_context)
     service = AssessmentService(assessment_context["db"])
+    student = assessment_context["students"][0]
 
     imported = service.import_rows(
         assessment_id=assessment.id,
         created_by_user_id=assessment_context["user"].id,
         rows=[
             {
-                "student_business_id": "UNKNOWN-DUP-1",
-                "student_name": assessment_context["students"][0].full_name,
+                "student_business_id": student.student_code,
                 "class": "5",
                 "division": "A",
                 "aggregate_marks": "10",
             },
             {
-                "student_business_id": "UNKNOWN-DUP-2",
-                "student_name": assessment_context["students"][0].full_name,
+                "student_business_id": student.student_code,
                 "class": "5",
                 "division": "A",
                 "aggregate_marks": "12",
@@ -800,27 +750,15 @@ def test_duplicate_mapped_student_cannot_submit(assessment_context):
         ],
     )
 
-    first_row = next(
-        row
-        for row in imported.rows
-        if row.student_business_id == "UNKNOWN-DUP-1"
-    )
-    second_row = next(
-        row
-        for row in imported.rows
-        if row.student_business_id == "UNKNOWN-DUP-2"
-    )
+    first_row, second_row = imported.rows[:2]
 
-    service.map_row(
-        import_row_id=first_row.id,
-        student_id=assessment_context["students"][0].id,
-        acknowledge_warning=True,
-    )
+    assert first_row.is_mapped is True
+    assert second_row.is_mapped is False
 
     with pytest.raises(AssessmentValidationError, match="only one result"):
         service.map_row(
             import_row_id=second_row.id,
-            student_id=assessment_context["students"][0].id,
+            student_id=student.id,
             acknowledge_warning=True,
         )
 
@@ -835,13 +773,10 @@ def test_duplicate_mapped_student_cannot_submit(assessment_context):
         )
 
     assert assessment.status != "SUBMITTED"
-
     assert (
         assessment_context["db"]
         .query(AssessmentResult)
-        .filter(
-            AssessmentResult.assessment_id == assessment.id
-        )
+        .filter(AssessmentResult.assessment_id == assessment.id)
         .count()
         == 0
     )
@@ -856,7 +791,6 @@ def test_import_requires_explicit_scope(assessment_context):
             created_by_user_id=assessment_context["user"].id,
             rows=[{
                 "student_business_id": assessment_context["students"][0].student_code,
-                "student_name": assessment_context["students"][0].full_name,
                 "class": "5",
                 "division": "A",
                 "aggregate_marks": "10",

@@ -4,11 +4,13 @@ import VigyanLogo from '../brand/VigyanLogo.vue'
 defineProps<{
   isRailCollapsed: boolean
   isMobileDrawerOpen: boolean
+  activeSection: 'overview' | 'schools'
 }>()
 
 const emit = defineEmits<{
   'toggle-collapse': []
   'close-drawer': []
+  navigate: [section: 'overview' | 'schools']
 }>()
 </script>
 
@@ -61,7 +63,7 @@ const emit = defineEmits<{
 
         <!-- Navigation -->
         <nav class="ov-nav" aria-label="Application sections">
-          <a href="#overview" @click="emit('close-drawer')" class="ov-nav-item ov-nav-item--active" title="Overview">
+          <a href="#overview" @click.prevent="emit('navigate', 'overview'); emit('close-drawer')" class="ov-nav-item" :class="{ 'ov-nav-item--active': activeSection === 'overview' }" title="Overview">
             <span class="material-symbols-outlined ov-nav-icon" aria-hidden="true">dashboard</span>
             <span class="ov-sidebar-label ov-nav-label">Overview</span>
             <span class="ov-nav-tooltip" aria-hidden="true">Overview</span>
@@ -76,7 +78,7 @@ const emit = defineEmits<{
             <span class="ov-sidebar-label ov-nav-label">Session Planning</span>
             <span class="ov-nav-tooltip" aria-hidden="true">Session Planning</span>
           </a>
-          <a href="#schools" @click="emit('close-drawer')" class="ov-nav-item" title="Schools &amp; Classes">
+          <a href="#schools" @click.prevent="emit('navigate', 'schools'); emit('close-drawer')" class="ov-nav-item" :class="{ 'ov-nav-item--active': activeSection === 'schools' }" title="Schools &amp; Classes">
             <span class="material-symbols-outlined ov-nav-icon" aria-hidden="true">domain</span>
             <span class="ov-sidebar-label ov-nav-label">Schools &amp; Classes</span>
             <span class="ov-nav-tooltip" aria-hidden="true">Schools &amp; Classes</span>

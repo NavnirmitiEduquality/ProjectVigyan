@@ -33,10 +33,17 @@ export function isDarkTheme(mode: ThemeMode): boolean {
     && window.matchMedia('(prefers-color-scheme: dark)').matches
 }
 
-export function applyPreAuthTheme(mode: ThemeMode): void {
-  const shell = document.querySelector('.app-shell')
+export function applyTheme(mode: ThemeMode): void {
+  const isDark = isDarkTheme(mode)
 
-  if (shell) {
-    shell.classList.toggle('is-dark', isDarkTheme(mode))
-  }
+  document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light')
+  document.documentElement.setAttribute('data-ov-theme', isDark ? 'dark' : 'light')
+
+  const shell = document.querySelector('.app-shell')
+  shell?.classList.toggle('is-dark', isDark)
+}
+
+export function setTheme(mode: ThemeMode): void {
+  saveTheme(mode)
+  applyTheme(mode)
 }

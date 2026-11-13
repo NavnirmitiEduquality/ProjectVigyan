@@ -9,8 +9,11 @@
   transition: background-color 180ms ease, color 180ms ease;
 }
 
-.institutional-header,
-.institutional-footer { border-color: var(--border); background: var(--canvas); }
+.institutional-header { border-color: var(--border); background: var(--canvas); }
+.institutional-footer {
+  border-color: var(--border, var(--ov-border));
+  background: var(--canvas, var(--ov-bg-surface));
+}
 
 .institutional-header {
   display: flex;
@@ -285,14 +288,17 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  width: 100%;
   padding: 18px clamp(20px, 5vw, 64px);
-  border-top: 1px solid var(--border);
-  color: var(--muted);
+  border-top: 1px solid var(--border, var(--ov-border));
+  color: var(--muted, var(--ov-text-muted));
+  background: var(--canvas, var(--ov-bg-surface));
   font-size: 13px;
 }
 .institutional-footer div { display: flex; flex-wrap: wrap; gap: 8px; }
-.institutional-footer strong { color: var(--primary); }
+.institutional-footer strong { color: var(--primary, var(--ov-brand)); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 600px) {
@@ -405,4 +411,19 @@
 
 .app-shell.is-dark .institutional-footer div span[aria-hidden="true"] {
   color: #C8A856;
+}
+
+/* Shared institutional footer inside the management shell */
+.ov-shell .institutional-footer {
+  border-top-color: var(--ov-border-subtle);
+  color: var(--ov-text-muted);
+  background: var(--ov-bg-surface);
+}
+
+.ov-shell .institutional-footer strong {
+  color: var(--ov-brand);
+}
+
+.ov-shell .institutional-footer div span[aria-hidden="true"] {
+  color: var(--ov-brand);
 }

@@ -395,6 +395,23 @@ def delete_demo_data(db: Session) -> None:
         users
         schools
     """
+    platform_owner_assignment = db.scalar(
+        select(UserRole.id)
+        .join(User, User.id == UserRole.user_id)
+        .join(Role, Role.id == UserRole.role_id)
+        .where(
+            User.data_origin == DATA_ORIGIN,
+            Role.code == "PLATFORM_OWNER",
+        )
+        .limit(1)
+    )
+
+    if platform_owner_assignment is not None:
+        raise RuntimeError(
+            "DEMO reset blocked: a DEMO-origin user has a "
+            "PLATFORM_OWNER role association. Review this association "
+            "before resetting demo data."
+        )
 
     student_count = get_existing_demo_count(db, Student)
     class_count = get_existing_demo_count(db, ClassDivision)

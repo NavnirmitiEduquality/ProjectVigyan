@@ -4,6 +4,7 @@ type ThemeMode = 'light' | 'dark' | 'system'
 
 defineProps<{
   isRailCollapsed: boolean
+  title?: string
   selectedYear: string
   academicYears: AcademicYear[]
   isLoadingAcademicYears: boolean
@@ -38,8 +39,8 @@ const emit = defineEmits<{
 
       <div class="ov-header-title">
         <h1>
-          <span class="ov-title-short">Overview</span>
-          <span class="ov-title-long">Management Overview</span>
+          <span class="ov-title-short">{{ title || 'Overview' }}</span>
+          <span class="ov-title-long">{{ title || 'Management Overview' }}</span>
         </h1>
       </div>
     </div>

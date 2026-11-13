@@ -165,7 +165,10 @@ class AssessmentImportRow(Base):
     )
     row_number: Mapped[int] = mapped_column(Integer, nullable=False)
     student_business_id: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    source_student_name: Mapped[str] = mapped_column(String(150), nullable=False)
+    source_student_name: Mapped[str | None] = mapped_column(
+        String(150),
+        nullable=True,
+    )
     source_class: Mapped[str | None] = mapped_column(String(20), nullable=True)
     source_division: Mapped[str | None] = mapped_column(String(20), nullable=True)
     aggregate_marks: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)

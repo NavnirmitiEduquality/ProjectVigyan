@@ -5,6 +5,7 @@ from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.models import (
+    AcademicYear,
     Assessment,
     AssessmentImport,
     AssessmentImportRow,
@@ -39,6 +40,31 @@ from app.services.reporting.delivery import (
 from app.services.reporting.engagement import get_engagement_report
 from app.services.reporting.tlm import get_tlm_report
 
+
+def _monitoring_date_bounds(
+    db: Session,
+    filters: ReportingFilters,
+) -> tuple[date | None, date | None]:
+    start_date = filters.start_date
+    end_date = filters.end_date
+
+    if filters.academic_year_id is not None:
+        academic_year = db.get(AcademicYear, filters.academic_year_id)
+        if academic_year is None:
+            raise ValueError("Academic year not found.")
+
+        start_date = max(
+            value for value in (start_date, academic_year.start_date)
+            if value is not None
+        )
+        end_date = min(
+            value for value in (end_date, academic_year.end_date)
+            if value is not None
+        )
+
+    return start_date, end_date
+
+
 def get_school_monitoring(db: Session, filters: ReportingFilters) -> dict:
     query = db.query(School).filter(School.data_origin == "PRODUCTION")
     if filters.authorized_school_ids is not None:
@@ -52,6 +78,9 @@ def get_school_monitoring(db: Session, filters: ReportingFilters) -> dict:
         academic_year_id=filters.academic_year_id,
         start_date=filters.start_date,
         end_date=filters.end_date,
+        school_id=filters.school_id,
+        class_division_id=filters.class_division_id,
+        para_teacher_id=filters.para_teacher_id,
     )
     delivery = {
         item["school_id"]: item
@@ -64,6 +93,8 @@ def get_school_monitoring(db: Session, filters: ReportingFilters) -> dict:
             academic_year_id=filters.academic_year_id,
             start_date=filters.start_date,
             end_date=filters.end_date,
+            school_id=filters.school_id,
+            class_division_id=filters.class_division_id,
         ),
         "school",
     )
@@ -84,6 +115,11 @@ def get_school_monitoring(db: Session, filters: ReportingFilters) -> dict:
             ClassDivision.data_origin == "PRODUCTION",
             Student.data_origin == "PRODUCTION",
             Student.status == "ACTIVE",
+            *(
+                [ClassDivision.id == filters.class_division_id]
+                if filters.class_division_id is not None
+                else []
+            )
         )
         .group_by(ClassDivision.school_id)
         .all()
@@ -93,111 +129,72 @@ def get_school_monitoring(db: Session, filters: ReportingFilters) -> dict:
         .filter(
             ClassDivision.school_id.in_(school_ids),
             ClassDivision.data_origin == "PRODUCTION",
+            *(
+                [ClassDivision.id == filters.class_division_id]
+                if filters.class_division_id is not None
+                else []
+            )
         )
         .group_by(ClassDivision.school_id)
         .all()
     )
     items = []
+    session_scope = apply_session_filters(
+        db,
+        production_session_query(db),
+        scoped,
+    )
+
     para_teachers = dict(
-        db.query(
+        session_scope
+        .filter(TeachingSession.para_teacher_id.isnot(None))
+        .with_entities(
             ClassDivision.school_id,
             func.count(func.distinct(TeachingSession.para_teacher_id)),
-        )
-        .join(
-            TeachingSession,
-            TeachingSession.class_division_id == ClassDivision.id,
-        )
-        .filter(
-            ClassDivision.school_id.in_(school_ids),
-            ClassDivision.data_origin == "PRODUCTION",
-            TeachingSession.data_origin == "PRODUCTION",
-            *(
-                [TeachingSession.session_date >= filters.start_date]
-                if filters.start_date
-                else []
-            ),
-            *(
-                [TeachingSession.session_date <= filters.end_date]
-                if filters.end_date
-                else []
-            ),
         )
         .group_by(ClassDivision.school_id)
         .all()
     )
 
     completed_sessions = dict(
-        db.query(
+        session_scope
+        .filter(TeachingSession.status == "COMPLETED")
+        .with_entities(
             ClassDivision.school_id,
             func.count(TeachingSession.id),
-        )
-        .join(
-            TeachingSession,
-            TeachingSession.class_division_id == ClassDivision.id,
-        )
-        .filter(
-            ClassDivision.school_id.in_(school_ids),
-            ClassDivision.data_origin == "PRODUCTION",
-            TeachingSession.data_origin == "PRODUCTION",
-            TeachingSession.status == "COMPLETED",
-            *(
-                [TeachingSession.session_date >= filters.start_date]
-                if filters.start_date
-                else []
-            ),
-            *(
-                [TeachingSession.session_date <= filters.end_date]
-                if filters.end_date
-                else []
-            ),
         )
         .group_by(ClassDivision.school_id)
         .all()
     )
 
     completed_with_evidence = dict(
-        db.query(
-            ClassDivision.school_id,
-            func.count(func.distinct(TeachingSession.id)),
-        )
-        .join(
-            TeachingSession,
-            TeachingSession.class_division_id == ClassDivision.id,
-        )
+        session_scope
         .join(
             SessionEvidence,
             SessionEvidence.teaching_session_id == TeachingSession.id,
         )
         .filter(
-            ClassDivision.school_id.in_(school_ids),
-            ClassDivision.data_origin == "PRODUCTION",
-            TeachingSession.data_origin == "PRODUCTION",
             TeachingSession.status == "COMPLETED",
             SessionEvidence.data_origin == "PRODUCTION",
-            *(
-                [TeachingSession.session_date >= filters.start_date]
-                if filters.start_date
-                else []
-            ),
-            *(
-                [TeachingSession.session_date <= filters.end_date]
-                if filters.end_date
-                else []
-            ),
+        )
+        .with_entities(
+            ClassDivision.school_id,
+            func.count(func.distinct(TeachingSession.id)),
         )
         .group_by(ClassDivision.school_id)
         .all()
     )
 
-
     classroom_observations = {}
     stem_inspections = {}
-
+    monitoring_start, monitoring_end = _monitoring_date_bounds(
+        db, filters
+    )
     if school_ids:
         classroom_rows = (
             db.query(
                 ClassroomObservation.school_id,
-                func.count(ClassroomObservation.id),
+                func.count(func.distinct(ClassroomObservation.id)),
                 func.count(
                     case(
                         (
@@ -231,18 +228,23 @@ def get_school_monitoring(db: Session, filters: ReportingFilters) -> dict:
                 ClassroomObservation.school_id.in_(school_ids),
                 ClassroomObservation.data_origin == "PRODUCTION",
                 *(
-                    [ClassroomObservation.observed_at >= filters.start_date]
-                    if filters.start_date
+                    [ClassroomObservation.observed_at >= monitoring_start]
+                    if monitoring_start
                     else []
                 ),
                 *(
                     [
                         ClassroomObservation.observed_at
-                        < filters.end_date + timedelta(days=1)
+                        < monitoring_end + timedelta(days=1)
                     ]
-                    if filters.end_date
+                    if monitoring_end
                     else []
                 ),
+                *(
+                    [ClassroomObservation.class_division_id == filters.class_division_id]
+                    if filters.class_division_id is not None
+                    else []
+                )
             )
             .group_by(ClassroomObservation.school_id)
             .all()
@@ -259,7 +261,7 @@ def get_school_monitoring(db: Session, filters: ReportingFilters) -> dict:
         inspection_rows = (
             db.query(
                 STEMInspection.school_id,
-                func.count(STEMInspection.id),
+                func.count(func.distinct(STEMInspection.id)),
                 func.count(
                     case(
                         (
@@ -290,18 +292,23 @@ def get_school_monitoring(db: Session, filters: ReportingFilters) -> dict:
                 STEMInspection.school_id.in_(school_ids),
                 STEMInspection.data_origin == "PRODUCTION",
                 *(
-                    [STEMInspection.inspected_at >= filters.start_date]
-                    if filters.start_date
+                    [STEMInspection.inspected_at >= monitoring_start]
+                    if monitoring_start
                     else []
                 ),
                 *(
                     [
                         STEMInspection.inspected_at
-                        < filters.end_date + timedelta(days=1)
+                        < monitoring_end + timedelta(days=1)
                     ]
-                    if filters.end_date
+                    if monitoring_end
                     else []
                 ),
+                *(
+                    [STEMInspection.class_division_id == filters.class_division_id]
+                    if filters.class_division_id is not None
+                    else []
+                )
             )
             .group_by(STEMInspection.school_id)
             .all()
@@ -787,11 +794,13 @@ def get_class_monitoring(db: Session, filters: ReportingFilters) -> dict:
 
     classroom_observations = {}
     stem_inspections = {}
-
+    monitoring_start, monitoring_end = _monitoring_date_bounds(
+        db, filters
+    )
     classroom_rows = (
         db.query(
             ClassroomObservation.class_division_id,
-            func.count(ClassroomObservation.id),
+            func.count(func.distinct(ClassroomObservation.id)),
             func.count(
                 case(
                     (
@@ -828,16 +837,16 @@ def get_class_monitoring(db: Session, filters: ReportingFilters) -> dict:
             ClassroomObservation.data_origin == "PRODUCTION",
             ClassDivision.data_origin == "PRODUCTION",
             *(
-                [ClassroomObservation.observed_at >= filters.start_date]
-                if filters.start_date
+                [ClassroomObservation.observed_at >= monitoring_start]
+                if monitoring_start
                 else []
             ),
             *(
                 [
                     ClassroomObservation.observed_at
-                    < filters.end_date + timedelta(days=1)
+                    < monitoring_end + timedelta(days=1)
                 ]
-                if filters.end_date
+                if monitoring_end
                 else []
             ),
         )
@@ -857,7 +866,7 @@ def get_class_monitoring(db: Session, filters: ReportingFilters) -> dict:
     inspection_rows = (
         db.query(
             STEMInspection.class_division_id,
-            func.count(STEMInspection.id),
+            func.count(func.distinct(STEMInspection.id)),
             func.count(
                 case(
                     (
@@ -893,16 +902,16 @@ def get_class_monitoring(db: Session, filters: ReportingFilters) -> dict:
             STEMInspection.data_origin == "PRODUCTION",
             ClassDivision.data_origin == "PRODUCTION",
             *(
-                [STEMInspection.inspected_at >= filters.start_date]
-                if filters.start_date
+                [STEMInspection.inspected_at >= monitoring_start]
+                if monitoring_start
                 else []
             ),
             *(
                 [
                     STEMInspection.inspected_at
-                    < filters.end_date + timedelta(days=1)
+                    < monitoring_end + timedelta(days=1)
                 ]
-                if filters.end_date
+                if monitoring_end
                 else []
             ),
         )
@@ -1292,12 +1301,14 @@ def get_para_teacher_monitoring(db: Session, filters: ReportingFilters) -> dict:
     engagement_by_pair = {pair_key(item): item for item in engagement_items}
     tlm_by_pair = {pair_key(item): item for item in tlm_items}
     observation_counts = {}
-
+    monitoring_start, monitoring_end = _monitoring_date_bounds(
+        db, filters
+    )
     classroom_query = (
         db.query(
             ClassroomObservation.target_para_teacher_id.label("para_teacher_id"),
             ClassroomObservation.school_id.label("school_id"),
-            func.count(ClassroomObservation.id).label("total"),
+            func.count(func.distinct(ClassroomObservation.id)).label("total"),
             func.count(
                 case(
                     (
@@ -1335,7 +1346,15 @@ def get_para_teacher_monitoring(db: Session, filters: ReportingFilters) -> dict:
             User.data_origin == "PRODUCTION",
         )
     )
-
+    if monitoring_start is not None:
+        classroom_query = classroom_query.filter(
+            ClassroomObservation.observed_at >= monitoring_start
+        )
+    if monitoring_end is not None:
+        classroom_query = classroom_query.filter(
+            ClassroomObservation.observed_at
+            < monitoring_end + timedelta(days=1)
+        )
     if filters.authorized_school_ids is not None:
         classroom_query = classroom_query.filter(
             ClassroomObservation.school_id.in_(filters.authorized_school_ids)
@@ -1370,7 +1389,7 @@ def get_para_teacher_monitoring(db: Session, filters: ReportingFilters) -> dict:
         db.query(
             STEMInspection.para_teacher_id.label("para_teacher_id"),
             STEMInspection.school_id.label("school_id"),
-            func.count(STEMInspection.id).label("total"),
+            func.count(func.distinct(STEMInspection.id)).label("total"),
             func.count(
                 case(
                     (
@@ -1404,6 +1423,15 @@ def get_para_teacher_monitoring(db: Session, filters: ReportingFilters) -> dict:
         )
     )
 
+    if monitoring_start is not None:
+        inspection_query = inspection_query.filter(
+            STEMInspection.inspected_at >= monitoring_start
+        )
+    if monitoring_end is not None:
+        inspection_query = inspection_query.filter(
+            STEMInspection.inspected_at
+            < monitoring_end + timedelta(days=1)
+        )
     if filters.authorized_school_ids is not None:
         inspection_query = inspection_query.filter(
             STEMInspection.school_id.in_(filters.authorized_school_ids)

@@ -6,7 +6,6 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from app.database import SessionLocal
 from app.main import app
 from app.models import (
     AcademicYear,
@@ -40,160 +39,10 @@ PASSWORD = "ReportingAttendance!2026"
 
 
 @pytest.fixture
-def reporting_fixture():
-    db = SessionLocal()
-    stale_users = (
-        db.query(User)
-        .filter(User.user_code.like("RP-%"))
-        .all()
-    )
-    stale_user_ids = [user.id for user in stale_users]
-    stale_roles = (
-        db.query(Role)
-        .filter(
-            (Role.code.like("REPORTING_VIEWER_%"))
-            | (Role.code.like("REPORTING_NO_PERMISSION_%"))
-        )
-        .all()
-    )
-    stale_role_ids = [role.id for role in stale_roles]
-    if stale_user_ids:
-        db.query(AuthSession).filter(
-            AuthSession.user_id.in_(stale_user_ids)
-        ).delete(synchronize_session=False)
-        db.query(UserRole).filter(
-            UserRole.user_id.in_(stale_user_ids)
-        ).delete(synchronize_session=False)
-        db.query(UserAssignment).filter(
-            UserAssignment.user_id.in_(stale_user_ids)
-        ).delete(synchronize_session=False)
-    if stale_role_ids:
-        db.query(RolePermission).filter(
-            RolePermission.role_id.in_(stale_role_ids)
-        ).delete(synchronize_session=False)
-        db.query(UserRole).filter(
-            UserRole.role_id.in_(stale_role_ids)
-        ).delete(synchronize_session=False)
-    stale_years = (
-        db.query(AcademicYear)
-        .filter(AcademicYear.name.like("Reporting Year %"))
-        .all()
-    )
-    stale_year_ids = [year.id for year in stale_years]
-
-    if stale_year_ids:
-        stale_assessments = (
-            db.query(Assessment)
-            .filter(Assessment.academic_year_id.in_(stale_year_ids))
-            .all()
-        )
-        stale_assessment_ids = [
-            assessment.id for assessment in stale_assessments
-        ]
-
-        if stale_assessment_ids:
-            db.query(AssessmentImport).filter(
-                AssessmentImport.assessment_id.in_(stale_assessment_ids)
-            ).delete(synchronize_session=False)
-            db.query(AssessmentResult).filter(
-                AssessmentResult.assessment_id.in_(stale_assessment_ids)
-            ).delete(synchronize_session=False)
-            db.query(Assessment).filter(
-                Assessment.id.in_(stale_assessment_ids)
-            ).delete(synchronize_session=False)
-
-        db.query(AcademicYear).filter(
-            AcademicYear.id.in_(stale_year_ids)
-        ).delete(synchronize_session=False)
-
-    if stale_user_ids:
-        stale_user_sessions = (
-            db.query(TeachingSession)
-            .filter(TeachingSession.para_teacher_id.in_(stale_user_ids))
-            .all()
-        )
-        stale_user_session_ids = [
-            session.id for session in stale_user_sessions
-        ]
-
-        if stale_user_session_ids:
-            db.query(SessionAttendance).filter(
-                SessionAttendance.teaching_session_id.in_(
-                    stale_user_session_ids
-                )
-            ).delete(synchronize_session=False)
-            db.query(SessionEngagement).filter(
-                SessionEngagement.teaching_session_id.in_(
-                    stale_user_session_ids
-                )
-            ).delete(synchronize_session=False)
-            db.query(SessionTLM).filter(
-                SessionTLM.teaching_session_id.in_(
-                    stale_user_session_ids
-                )
-            ).delete(synchronize_session=False)
-            db.query(SessionEvidence).filter(
-                SessionEvidence.teaching_session_id.in_(
-                    stale_user_session_ids
-                )
-            ).delete(synchronize_session=False)
-            db.query(TeachingSession).filter(
-                TeachingSession.id.in_(stale_user_session_ids)
-            ).delete(synchronize_session=False)
-
-    if stale_users:
-        db.query(User).filter(User.id.in_(stale_user_ids)).delete(
-            synchronize_session=False
-        )
-    if stale_roles:
-        db.query(Role).filter(Role.id.in_(stale_role_ids)).delete(
-            synchronize_session=False
-        )
-    stale_schools = (
-        db.query(School)
-        .filter(
-            (School.school_code.like("RP1-%"))
-            | (School.school_code.like("RP2-%"))
-        )
-        .all()
-    )
-    stale_school_ids = [school.id for school in stale_schools]
-    stale_divisions = (
-        db.query(ClassDivision)
-        .filter(ClassDivision.school_id.in_(stale_school_ids))
-        .all()
-        if stale_school_ids
-        else []
-    )
-    stale_division_ids = [division.id for division in stale_divisions]
-    stale_sessions = (
-        db.query(TeachingSession)
-        .filter(TeachingSession.class_division_id.in_(stale_division_ids))
-        .all()
-        if stale_division_ids
-        else []
-    )
-    stale_session_ids = [session.id for session in stale_sessions]
-    if stale_session_ids:
-        db.query(SessionAttendance).filter(
-            SessionAttendance.teaching_session_id.in_(stale_session_ids)
-        ).delete(synchronize_session=False)
-        db.query(TeachingSession).filter(
-            TeachingSession.id.in_(stale_session_ids)
-        ).delete(synchronize_session=False)
-    if stale_division_ids:
-        db.query(Student).filter(
-            Student.class_division_id.in_(stale_division_ids)
-        ).delete(synchronize_session=False)
-        db.query(ClassDivision).filter(
-            ClassDivision.id.in_(stale_division_ids)
-        ).delete(synchronize_session=False)
-    if stale_school_ids:
-        db.query(School).filter(School.id.in_(stale_school_ids)).delete(
-            synchronize_session=False
-        )
-    db.commit()
+def reporting_fixture(reporting_db):
+    db = reporting_db
     suffix = uuid4().hex[:10]
+
     school_one = School(
         school_code=f"RP1-{suffix}",
         school_name="Reporting School One",
@@ -263,6 +112,7 @@ def reporting_fixture():
 
     para_teacher = User(
         user_code=f"RP-PT-{suffix}",
+        account_category="PARA_TEACHER",
         full_name="Reporting Para Teacher",
         email=f"rp-pt-{suffix}@example.com",
         password_hash=hash_password(PASSWORD),
@@ -271,6 +121,7 @@ def reporting_fixture():
     )
     viewer = User(
         user_code=f"RP-V-{suffix}",
+        account_category="MANAGEMENT",
         full_name="Reporting Viewer",
         email=f"rp-viewer-{suffix}@example.com",
         password_hash=hash_password(PASSWORD),
@@ -279,6 +130,7 @@ def reporting_fixture():
     )
     no_permission = User(
         user_code=f"RP-NP-{suffix}",
+        account_category="MANAGEMENT",
         full_name="Reporting No Permission",
         email=f"rp-no-permission-{suffix}@example.com",
         password_hash=hash_password(PASSWORD),
@@ -287,6 +139,7 @@ def reporting_fixture():
     )
     platform_owner = User(
         user_code=f"RP-PO-{suffix}",
+        account_category="PLATFORM_OWNER",
         full_name="Reporting Platform Owner",
         email=f"rp-platform-owner-{suffix}@example.com",
         password_hash=hash_password(PASSWORD),
@@ -310,17 +163,29 @@ def reporting_fixture():
     )
     db.add_all([report_role, no_permission_role])
     db.flush()
-    platform_role = db.query(Role).filter(Role.code == "PLATFORM_OWNER").one()
-    report_permission = (
-        db.query(Permission).filter(Permission.code == "report.view").one()
+
+    platform_role = (
+        db.query(Role)
+        .filter(Role.code == "PLATFORM_OWNER")
+        .one()
     )
+    report_permission = (
+        db.query(Permission)
+        .filter(Permission.code == "report.view")
+        .one()
+    )
+
     db.add_all(
         [
             RolePermission(
                 role_id=report_role.id,
                 permission_id=report_permission.id,
             ),
-            UserRole(user_id=viewer.id, role_id=report_role.id, is_active=True),
+            UserRole(
+                user_id=viewer.id,
+                role_id=report_role.id,
+                is_active=True,
+            ),
             UserRole(
                 user_id=no_permission.id,
                 role_id=no_permission_role.id,
@@ -348,7 +213,7 @@ def reporting_fixture():
         (divisions[2], date(2026, 4, 1), ["PRESENT", "ABSENT"]),
         (divisions[0], date(2027, 4, 1), ["PRESENT", "PRESENT"]),
     ]
-    created_sessions = []
+
     for division, session_date, statuses in sessions:
         session = TeachingSession(
             class_division_id=division.id,
@@ -360,12 +225,13 @@ def reporting_fixture():
         )
         db.add(session)
         db.flush()
-        created_sessions.append(session)
+
         division_students = [
             student
             for student in students
             if student.class_division_id == division.id
         ]
+
         db.add_all(
             [
                 SessionAttendance(
@@ -379,8 +245,10 @@ def reporting_fixture():
         )
 
     db.commit()
+
     token_users = [viewer, no_permission, platform_owner]
     tokens = {}
+
     for user in token_users:
         token = generate_session_token()
         db.add(
@@ -392,9 +260,10 @@ def reporting_fixture():
             )
         )
         tokens[user.email] = token
+
     db.commit()
 
-    result = {
+    yield {
         "db": db,
         "school_one": school_one,
         "school_two": school_two,
@@ -403,55 +272,11 @@ def reporting_fixture():
         "student_one": students[0],
         "student_other_school": students[4],
         "year": year,
+        "para_teacher": para_teacher,
         "viewer_token": tokens[viewer.email],
         "no_permission_token": tokens[no_permission.email],
         "platform_owner_token": tokens[platform_owner.email],
     }
-    try:
-        yield result
-    finally:
-        db.rollback()
-        db.query(AuthSession).filter(
-            AuthSession.user_id.in_([viewer.id, no_permission.id])
-        ).delete(synchronize_session=False)
-        db.query(UserRole).filter(
-            UserRole.user_id.in_(
-                [viewer.id, no_permission.id, platform_owner.id]
-            )
-        ).delete(synchronize_session=False)
-        db.query(UserAssignment).filter(
-            UserAssignment.user_id == viewer.id
-        ).delete(synchronize_session=False)
-        db.query(AuthSession).filter(
-            AuthSession.user_id == platform_owner.id
-        ).delete(synchronize_session=False)
-        db.query(RolePermission).filter(
-            RolePermission.role_id.in_([report_role.id, no_permission_role.id])
-        ).delete(synchronize_session=False)
-        db.query(SessionAttendance).filter(
-            SessionAttendance.teaching_session_id.in_(
-                [session.id for session in created_sessions]
-            )
-        ).delete(synchronize_session=False)
-        db.query(TeachingSession).filter(
-            TeachingSession.id.in_([session.id for session in created_sessions])
-        ).delete(synchronize_session=False)
-        db.delete(year)
-        db.delete(viewer)
-        db.delete(no_permission)
-        db.delete(platform_owner)
-        db.delete(para_teacher)
-        db.delete(report_role)
-        db.delete(no_permission_role)
-        db.delete(divisions[0])
-        db.delete(divisions[1])
-        db.delete(divisions[2])
-        for student in students:
-            db.delete(student)
-        db.delete(school_one)
-        db.delete(school_two)
-        db.commit()
-        db.close()
 
 
 def _headers(token: str) -> dict[str, str]:

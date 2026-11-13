@@ -3,6 +3,7 @@ from getpass import getpass
 from app.database import SessionLocal
 from app.models import Role, User, UserRole
 from app.services.auth_service import hash_password
+from app.services.user_management import UserManagementService
 
 
 def create_platform_owner():
@@ -23,8 +24,13 @@ def create_platform_owner():
         password = getpass("Password: ")
         confirm_password = getpass("Confirm password: ")
 
-        if not password:
-            raise ValueError("Password is required.")
+        if not password.strip():
+            raise ValueError("Password cannot be blank.")
+
+        if len(password) < 12 or len(password) > 128:
+            raise ValueError(
+                "Password must be between 12 and 128 characters."
+            )
 
         if password != confirm_password:
             raise ValueError("Passwords do not match.")
@@ -54,19 +60,12 @@ def create_platform_owner():
                 "Run the role/permission seed first."
             )
 
-        # Generate the human-readable user code.
-        existing_codes = (
-            db.query(User.user_code)
-            .filter(User.user_code.like("PO%"))
-            .all()
-        )
-
-        next_number = len(existing_codes) + 1
-        user_code = f"PO{next_number:04d}"
+        user_code = UserManagementService(db).allocate_user_code("PO")
 
         # Create the user.
         user = User(
             user_code=user_code,
+            account_category="PLATFORM_OWNER",
             full_name=full_name,
             email=email,
             password_hash=hash_password(password),

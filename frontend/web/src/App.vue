@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import SignInView from './components/auth/SignInView.vue'
 import InitializationView, { type InitializationState } from './components/initialization/InitializationView.vue'
 import InstitutionalFooter from './components/layout/InstitutionalFooter.vue'
@@ -7,23 +8,35 @@ import InstitutionalHeader from './components/layout/InstitutionalHeader.vue'
 import ManagementOverview from './components/management/ManagementOverview.vue'
 import { clearSession, getMe, getSessionToken, type AuthError, type CurrentUser } from './services/auth'
 import {
-  applyPreAuthTheme,
+  applyTheme,
   getSavedTheme,
   isDarkTheme,
-  saveTheme,
+  setTheme,
   type ThemeMode,
 } from './services/theme'
 
 type AppScreen = 'sign-in' | 'initializing' | 'authenticated'
 
+const router = useRouter()
 const screen = ref<AppScreen>('sign-in')
 const themeMode = ref<ThemeMode>(getSavedTheme())
 const isPreAuthDark = computed(() => isDarkTheme(themeMode.value))
 
+function updateTheme(mode: ThemeMode) {
+  themeMode.value = mode
+  setTheme(mode)
+}
+
 function togglePreAuthTheme() {
-  themeMode.value = isPreAuthDark.value ? 'light' : 'dark'
-  saveTheme(themeMode.value)
-  applyPreAuthTheme(themeMode.value)
+  updateTheme(isPreAuthDark.value ? 'light' : 'dark')
+}
+
+const systemThemeQuery = window.matchMedia('(prefers-color-scheme: dark)')
+
+function handleSystemThemeChange() {
+  if (themeMode.value === 'system') {
+    applyTheme('system')
+  }
 }
 const initializationState = ref<InitializationState>('validating')
 const currentUser = ref<CurrentUser | null>(null)
@@ -36,6 +49,9 @@ async function validateSession() {
   try {
     currentUser.value = await getMe()
     screen.value = 'authenticated'
+    if (router.currentRoute.value.name === 'sign-in') {
+      await router.replace({ name: 'overview' })
+    }
   } catch (error) {
     const authError = error as AuthError
 
@@ -44,6 +60,7 @@ async function validateSession() {
       initializationState.value = 'invalid-session'
       signInMessage.value = 'Your session is invalid or has expired. Please sign in again.'
       screen.value = 'sign-in'
+      await router.replace({ name: 'sign-in' })
       return
     }
 
@@ -61,16 +78,21 @@ function returnToSignIn() {
   currentUser.value = null
   signInMessage.value = 'Please sign in again to continue.'
   screen.value = 'sign-in'
+  void router.replace({ name: 'sign-in' })
 }
 
 onMounted(() => {
-  document.documentElement.classList.remove('dark')
-  applyPreAuthTheme(themeMode.value)
+  applyTheme(themeMode.value)
+  systemThemeQuery.addEventListener('change', handleSystemThemeChange)
 
   // Restore the authenticated screen when a saved session token exists.
   if (getSessionToken()) {
     void validateSession()
   }
+})
+
+onUnmounted(() => {
+  systemThemeQuery.removeEventListener('change', handleSystemThemeChange)
 })
 </script>
 
@@ -92,5 +114,5 @@ onMounted(() => {
 
   <!-- Authenticated: full-screen management overview (owns its own layout) -->
   <ManagementOverview v-else :current-user="currentUser" :initial-theme="themeMode"
-    @return-to-sign-in="returnToSignIn" />
+    @change-theme="updateTheme" @return-to-sign-in="returnToSignIn" />
 </template>

@@ -122,3 +122,57 @@ export async function createAcademicYear(
 
   return data as AcademicYear
 }
+
+export interface AcademicHoliday {
+  id: string
+  academic_year_id: string
+  holiday_date: string
+  name: string
+  type: string
+  description: string | null
+  is_active: boolean
+}
+
+export async function listHolidays(): Promise<AcademicHoliday[]> {
+  const token = getSessionToken()
+
+  if (!token) {
+    throw new Error('Your session is missing. Please sign in again.')
+  }
+
+  let response: Response
+
+  try {
+    response = await fetch(
+      `${apiBaseUrl}/academic-calendar/holidays?active_only=true`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+        },
+      },
+    )
+  } catch {
+    throw new Error('Unable to reach the academic-calendar service.')
+  }
+
+  if (response.status === 401) {
+    throw new Error('Your session has expired. Please sign in again.')
+  }
+
+  if (response.status === 403) {
+    throw new Error('You do not have permission to view holidays.')
+  }
+
+  if (!response.ok) {
+    throw new Error('Unable to load academic holidays.')
+  }
+
+  const data: unknown = await response.json()
+
+  if (!Array.isArray(data)) {
+    throw new Error('The academic-calendar service returned an invalid response.')
+  }
+
+  return data as AcademicHoliday[]
+}

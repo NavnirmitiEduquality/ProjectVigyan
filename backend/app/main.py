@@ -14,6 +14,7 @@ from app.routers.academic_calendar import router as academic_calendar_router
 from app.routers.assessment import router as assessment_router
 from app.routers.reporting import router as reporting_router
 from app.routers.observations import router as observations_router
+from app.routers.users import router as users_router
 
 app = FastAPI(
     title="Project Vigyan API",
@@ -34,6 +35,7 @@ app.include_router(academic_calendar_router)
 app.include_router(assessment_router)
 app.include_router(reporting_router)
 app.include_router(observations_router)
+app.include_router(users_router)
 
 @app.get("/")
 def root():

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import type { CurrentUser } from '../../services/auth'
 import {
   createAcademicYear,
@@ -7,54 +8,75 @@ import {
 } from '../../services/academicCalendar'
 import {
   getAttendanceReport,
+  getClassesReport,
   getDeliveryReport,
   getDeliveryTrend,
   getEngagementReport,
+  getTlmReport,
 } from '../../services/reporting'
+
 import type {
   AttendanceReportItem,
+  ClassMonitoringItem,
   DeliveryReportItem,
   DeliveryTrendItem,
   EngagementReportItem,
+  ReportingFilters,
+  TlmReportItem,
 } from '../../services/reporting'
+import {
+  listObservations,
+  listInspections,
+} from '../../services/observations'
+
+import type {
+  ObservationRecord,
+  InspectionRecord,
+} from '../../services/observations'
+
+import { listHolidays } from '../../services/academicCalendar'
 import type { AcademicYear } from '../../services/academicCalendar'
-import { saveTheme, type ThemeMode } from '../../services/theme'
+import { isDarkTheme, type ThemeMode } from '../../services/theme'
 import ManagementSidebar from './ManagementSidebar.vue'
 import ManagementHeader from './ManagementHeader.vue'
+import InstitutionalFooter from '../layout/InstitutionalFooter.vue'
 import ManagementMetricCard from './ManagementMetricCard.vue'
 import DeliveryTrajectoryChart from './DeliveryTrajectoryChart.vue'
 import ManagementAttentionPanel from './ManagementAttentionPanel.vue'
+import AttendanceAnalysisChart from './AttendanceAnalysisChart.vue'
+import EngagementDistributionChart from './EngagementDistributionChart.vue'
+import SchoolClassPerformanceChart from './SchoolClassPerformanceChart.vue'
+import AssessmentProgressSummary from './AssessmentProgressSummary.vue'
+import SchoolsView from './schools/SchoolsView.vue'
+import { listSchools, type School } from '../../services/schools'
+import {
+  listClassDivisions,
+  type ClassDivision,
+} from '../../services/classDivisions'
+type ManagementSection = 'overview' | 'schools'
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 const props = defineProps<{
   currentUser: CurrentUser | null
-  initialTheme?: ThemeMode
+  initialTheme: ThemeMode
 }>()
 
 const emit = defineEmits<{
   returnToSignIn: []
+  changeTheme: [mode: ThemeMode]
 }>()
+const route = useRoute()
+const router = useRouter()
+const activeSection = computed<ManagementSection>(() =>
+  route.meta.section === 'schools' ? 'schools' : 'overview',
+)
 
 // ─── Theme ────────────────────────────────────────────────────────────────────
-const themeMode = ref<ThemeMode>(props.initialTheme ?? 'light')
-
-const darkMediaQuery = ref<MediaQueryList | null>(null)
+const themeMode = computed(() => props.initialTheme)
+const isDark = computed(() => isDarkTheme(themeMode.value))
 
 function applyTheme(mode: ThemeMode) {
-  themeMode.value = mode
-  saveTheme(mode)
-  const root = document.documentElement
-  let isDark = mode === 'dark'
-  if (mode === 'system' && window.matchMedia) {
-    isDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-  }
-  root.setAttribute('data-ov-theme', isDark ? 'dark' : 'light')
-}
-
-function handleSystemThemeChange() {
-  if (themeMode.value === 'system') {
-    applyTheme('system')
-  }
+  emit('changeTheme', mode)
 }
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
@@ -95,6 +117,9 @@ function openMobileDrawer() {
 function closeMobileDrawer() {
   isMobileDrawerOpen.value = false
 }
+function navigate(section: ManagementSection) {
+  void router.push({ name: section })
+}
 
 function handleKeyDown(e: KeyboardEvent) {
   if (e.key === 'Escape' && isMobileDrawerOpen.value) {
@@ -126,6 +151,152 @@ const newAcademicYearName = ref('')
 const newAcademicYearStartDate = ref('')
 const newAcademicYearEndDate = ref('')
 const newAcademicYearIsActive = ref(true)
+const schools = ref<School[]>([])
+const classDivisions = ref<ClassDivision[]>([])
+const paraTeacherOptions = ref<DeliveryReportItem[]>([])
+
+const selectedSchoolId = ref('')
+const selectedClassDivisionId = ref('')
+const selectedParaTeacherId = ref('')
+const classMonitoringItems = ref<ClassMonitoringItem[]>([])
+const classMonitoringLoaded = ref(false)
+const classMonitoringError = ref('')
+const filterStartDate = ref('')
+const filterEndDate = ref('')
+
+const isLoadingFilters = ref(false)
+const filterOptionsError = ref('')
+const dateRangeError = ref('')
+const paraTeacherOptionsError = ref('')
+
+const activeReportingFilters = computed(() => ({
+  academicYearId: selectedYear.value,
+  startDate: filterStartDate.value || undefined,
+  endDate: filterEndDate.value || undefined,
+  schoolId: selectedSchoolId.value || undefined,
+  classDivisionId: selectedClassDivisionId.value || undefined,
+  paraTeacherId: selectedParaTeacherId.value || undefined,
+}))
+
+const availableClassDivisions = computed(() =>
+  classDivisions.value
+    .filter((division) =>
+      division.status === 'ACTIVE' &&
+      division.data_origin === 'PRODUCTION' &&
+      (!selectedSchoolId.value ||
+        division.school_id === selectedSchoolId.value),
+    )
+    .sort((a, b) =>
+      a.class_level - b.class_level ||
+      a.division.localeCompare(b.division),
+    ),
+)
+
+const availableParaTeachers = computed(() =>
+  paraTeacherOptions.value
+    .filter((teacher) => teacher.para_teacher_id)
+    .sort((a, b) =>
+      (a.para_teacher_name ?? '').localeCompare(
+        b.para_teacher_name ?? '',
+      ),
+    ),
+)
+const activeSchoolsCount = computed(() => {
+  if (selectedSchoolId.value) {
+    return schools.value.some(
+      school => school.id === selectedSchoolId.value,
+    ) ? 1 : 0
+  }
+
+  return schools.value.length
+})
+
+const activeStudentsCount = computed(() => {
+  if (!classMonitoringLoaded.value || classMonitoringError.value) {
+    return null
+  }
+
+  return classMonitoringItems.value
+    .filter(item => item.status === 'ACTIVE')
+    .reduce(
+      (total, item) => total + item.active_students,
+      0,
+    )
+})
+
+const evidenceCoverageStats = computed(() => {
+  if (!classMonitoringLoaded.value || classMonitoringError.value) {
+    return null
+  }
+
+  const eligible = classMonitoringItems.value.reduce(
+    (total, item) =>
+      total + item.evidence.eligible_completed_sessions,
+    0,
+  )
+
+  const withEvidence = classMonitoringItems.value.reduce(
+    (total, item) =>
+      total + item.evidence.sessions_with_evidence,
+    0,
+  )
+
+  return {
+    eligible,
+    withEvidence,
+    percentage: eligible > 0
+      ? (withEvidence / eligible) * 100
+      : null,
+  }
+})
+
+async function loadFilterOptions() {
+  isLoadingFilters.value = true
+  filterOptionsError.value = ''
+
+  const [schoolResult, divisionResult] = await Promise.allSettled([
+    listSchools(),
+    listClassDivisions(),
+  ])
+
+  if (schoolResult.status === 'fulfilled') {
+    schools.value = schoolResult.value.filter(
+      (school) =>
+        school.status === 'ACTIVE' &&
+        school.data_origin === 'PRODUCTION',
+    )
+  } else {
+    filterOptionsError.value = 'Unable to load the school filter options.'
+  }
+
+  if (divisionResult.status === 'fulfilled') {
+    classDivisions.value = divisionResult.value
+  } else {
+    filterOptionsError.value = [
+      filterOptionsError.value,
+      'Unable to load class-division filter options.',
+    ].filter(Boolean).join(' ')
+  }
+
+  isLoadingFilters.value = false
+}
+
+function clearOverviewFilters() {
+  selectedSchoolId.value = ''
+  selectedClassDivisionId.value = ''
+  selectedParaTeacherId.value = ''
+  filterStartDate.value = ''
+  filterEndDate.value = ''
+}
+
+watch(selectedSchoolId, () => {
+  selectedClassDivisionId.value = ''
+  selectedParaTeacherId.value = ''
+})
+
+watch(selectedClassDivisionId, () => {
+  selectedParaTeacherId.value = ''
+})
 
 function openCreateAcademicYear() {
   createAcademicYearError.value = ''
@@ -220,11 +391,127 @@ async function loadAcademicYears() {
   }
 }
 
+const holidays = ref<Awaited<ReturnType<typeof listHolidays>>>([])
+const holidaysError = ref('')
+const isLoadingHolidays = ref(false)
+
+const observations = ref<ObservationRecord[]>([])
+const inspections = ref<InspectionRecord[]>([])
+
+const observationsError = ref('')
+const inspectionsError = ref('')
+
+const isLoadingOperations = ref(false)
+
+const canViewObservations = computed(
+  () => props.currentUser?.permissions.includes(
+    'classroom_observation.view',
+  ) ?? false,
+)
+
+const canViewInspections = computed(
+  () => props.currentUser?.permissions.includes(
+    'stem_inspection.view',
+  ) ?? false,
+)
+
+const canViewCalendar = computed(
+  () => props.currentUser?.permissions.includes(
+    'calendar.view',
+  ) ?? false,
+)
+
+const canViewReports = computed(
+  () => props.currentUser?.permissions.includes('report.view') ?? false,
+)
+
+const observationStatuses = computed(() =>
+  observations.value.reduce<Record<string, number>>(
+    (result, record) => {
+      result[record.report_status] =
+        (result[record.report_status] ?? 0) + 1
+      return result
+    },
+    {},
+  ),
+)
+
+const inspectionStatuses = computed(() =>
+  inspections.value.reduce<Record<string, number>>(
+    (result, record) => {
+      result[record.report_status] =
+        (result[record.report_status] ?? 0) + 1
+      return result
+    },
+    {},
+  ),
+)
+
+async function loadOperationalSummaries() {
+  isLoadingOperations.value = true
+
+  observationsError.value = ''
+  inspectionsError.value = ''
+
+  const requests = await Promise.allSettled([
+    canViewObservations.value
+      ? listObservations()
+      : Promise.resolve(null),
+
+    canViewInspections.value
+      ? listInspections()
+      : Promise.resolve(null),
+  ])
+
+  const [observationResult, inspectionResult] = requests
+
+  if (observationResult.status === 'fulfilled') {
+    observations.value = observationResult.value ?? []
+  } else {
+    observations.value = []
+    observationsError.value =
+      observationResult.reason instanceof Error
+        ? observationResult.reason.message
+        : 'Unable to load observation records.'
+  }
+
+  if (inspectionResult.status === 'fulfilled') {
+    inspections.value = inspectionResult.value ?? []
+  } else {
+    inspections.value = []
+    inspectionsError.value =
+      inspectionResult.reason instanceof Error
+        ? inspectionResult.reason.message
+        : 'Unable to load inspection records.'
+  }
+
+  isLoadingOperations.value = false
+}
+
+async function loadHolidaySummary() {
+  if (!canViewCalendar.value) return
+
+  isLoadingHolidays.value = true
+  holidaysError.value = ''
+
+  try {
+    holidays.value = await listHolidays()
+  } catch (error) {
+    holidays.value = []
+    holidaysError.value =
+      error instanceof Error
+        ? error.message
+        : 'Unable to load holiday information.'
+  } finally {
+    isLoadingHolidays.value = false
+  }
+}
 
 // ─── Live reporting ─────────────────────────────────────────────────────────
 const deliveryReport = ref<DeliveryReportItem | null>(null)
 const attendanceReport = ref<AttendanceReportItem | null>(null)
 const engagementReport = ref<EngagementReportItem | null>(null)
+const tlmReport = ref<TlmReportItem | null>(null)
 const deliveryTrend = ref<DeliveryTrendItem[]>([])
 const isLoadingReports = ref(false)
 const reportingErrors = ref({
@@ -232,6 +519,7 @@ const reportingErrors = ref({
   attendance: '',
   engagement: '',
   trend: '',
+  tlm: '',
 })
 let reportRequestId = 0
 
@@ -253,43 +541,85 @@ const reportBannerText = computed(() => {
   if (!selectedYear.value) return 'No production academic year is configured.'
   if (isLoadingReports.value) return 'Loading live reporting data…'
   if (reportingErrorMessages.value.length) {
-    return `Some reporting data could not be loaded (${reportingErrorMessages.value.length} of 4 reports).`
+    return `Some reporting data could not be loaded (${reportingErrorMessages.value.length} of 5 reports).`
   }
   return 'Live reporting data • Production records only'
 })
 
-async function loadReports(yearId: string) {
+async function loadReports() {
   const requestId = ++reportRequestId
+  const filters: ReportingFilters = {
+    ...activeReportingFilters.value,
+  }
 
   reportingErrors.value = {
     delivery: '',
     attendance: '',
     engagement: '',
     trend: '',
+    tlm: '',
   }
+
   deliveryReport.value = null
   attendanceReport.value = null
   engagementReport.value = null
   deliveryTrend.value = []
+  tlmReport.value = null
+  classMonitoringItems.value = []
+  classMonitoringError.value = ''
+  classMonitoringLoaded.value = false
+  classMonitoringError.value = ''
+  if (!filters.academicYearId) {
+    isLoadingReports.value = false
+    paraTeacherOptions.value = []
+    return
+  }
 
-  if (!yearId) {
+  if (!canViewReports.value) {
+    paraTeacherOptions.value = []
+    isLoadingReports.value = false
+    return
+  }
+
+  if (
+    filters.startDate &&
+    filters.endDate &&
+    filters.startDate > filters.endDate
+  ) {
+    dateRangeError.value = 'The end date must not be earlier than the start date.'
     isLoadingReports.value = false
     return
   }
 
   isLoadingReports.value = true
 
+  // Do not constrain the option list by the currently selected para-teacher.
+  const paraTeacherFilters: ReportingFilters = {
+    ...filters,
+    paraTeacherId: undefined,
+  }
+
   const results = await Promise.allSettled([
-    getDeliveryReport(yearId),
-    getAttendanceReport(yearId),
-    getEngagementReport(yearId),
-    getDeliveryTrend(yearId),
+    getDeliveryReport(filters),
+    getAttendanceReport(filters),
+    getEngagementReport(filters),
+    getDeliveryTrend(filters),
+    getTlmReport(filters),
+    getDeliveryReport(paraTeacherFilters, 'para_teacher'),
+    getClassesReport(filters),
   ])
 
-  // Ignore responses belonging to an older year selection.
   if (requestId !== reportRequestId) return
 
-  const [delivery, attendance, engagement, trend] = results
+  const [
+    delivery,
+    attendance,
+    engagement,
+    trend,
+    tlm,
+    paraTeachers,
+    classes,
+  ] = results
 
   if (delivery.status === 'fulfilled') {
     deliveryReport.value = delivery.value.items[0] ?? null
@@ -318,6 +648,19 @@ async function loadReports(yearId: string) {
         : 'Unable to load engagement data.'
   }
 
+  if (classes.status === 'fulfilled') {
+    classMonitoringItems.value = classes.value.items
+    classMonitoringLoaded.value = true
+    classMonitoringError.value = ''
+  } else {
+    classMonitoringItems.value = []
+    classMonitoringLoaded.value = false
+    classMonitoringError.value =
+      classes.reason instanceof Error
+        ? classes.reason.message
+        : 'Unable to load class monitoring data.'
+  }
+
   if (trend.status === 'fulfilled') {
     deliveryTrend.value = trend.value.items
   } else {
@@ -327,11 +670,40 @@ async function loadReports(yearId: string) {
         : 'Unable to load delivery trend data.'
   }
 
+  if (paraTeachers.status === 'fulfilled') {
+    paraTeacherOptions.value = paraTeachers.value.items
+    paraTeacherOptionsError.value = ''
+  } else {
+    paraTeacherOptions.value = []
+    paraTeacherOptionsError.value =
+      paraTeachers.reason instanceof Error
+        ? `Para-teacher options unavailable: ${paraTeachers.reason.message}`
+        : 'Para-teacher options are unavailable.'
+  }
+
+  if (tlm.status === 'fulfilled') {
+    tlmReport.value = tlm.value.items[0] ?? null
+  } else {
+    reportingErrors.value.tlm =
+      tlm.reason instanceof Error
+        ? tlm.reason.message
+        : 'Unable to load TLM recording data.'
+  }
   isLoadingReports.value = false
 }
 
-watch(selectedYear, (yearId) => {
-  void loadReports(yearId)
+watch(
+  activeReportingFilters,
+  () => {
+    dateRangeError.value = ''
+    paraTeacherOptionsError.value = ''
+    void loadReports()
+  },
+  { deep: true },
+)
+
+watch(canViewReports, () => {
+  void loadReports()
 })
 
 // ─── User initials ────────────────────────────────────────────────────────────
@@ -353,30 +725,21 @@ const displayName = computed(() =>
 onMounted(() => {
   window.addEventListener('resize', handleResize)
   window.addEventListener('keydown', handleKeyDown)
-  if (window.matchMedia) {
-    darkMediaQuery.value = window.matchMedia('(prefers-color-scheme: dark)')
-    darkMediaQuery.value.addEventListener('change', handleSystemThemeChange)
-  }
-  applyTheme(themeMode.value)
   handleResize()
+  void loadFilterOptions()
   void loadAcademicYears()
+  void loadOperationalSummaries()
+  void loadHolidaySummary()
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize)
   window.removeEventListener('keydown', handleKeyDown)
-  if (darkMediaQuery.value) {
-    darkMediaQuery.value.removeEventListener('change', handleSystemThemeChange)
-  }
-  // Clean up data-ov-theme to prevent bleed
-  document.documentElement.removeAttribute('data-ov-theme')
 })
-
-watch(themeMode, (mode) => applyTheme(mode))
 </script>
 
 <template>
-  <div class="ov-shell" :class="[themeMode === 'dark' ? 'ov-dark' : '', isRailCollapsed ? 'ov-is-rail' : '']">
+  <div class="ov-shell" :class="[isDark ? 'ov-dark' : '', isRailCollapsed ? 'ov-is-rail' : '']">
     <!-- ═══════════════════════════════════════════════════════════════════════ -->
     <!-- MOBILE DRAWER BACKDROP                                                 -->
     <!-- ═══════════════════════════════════════════════════════════════════════ -->
@@ -387,14 +750,16 @@ watch(themeMode, (mode) => applyTheme(mode))
     <!-- SIDEBAR                                                                 -->
     <!-- ═══════════════════════════════════════════════════════════════════════ -->
     <ManagementSidebar :is-rail-collapsed="isRailCollapsed" :is-mobile-drawer-open="isMobileDrawerOpen"
-      @toggle-collapse="toggleSidebarCollapse" @close-drawer="closeMobileDrawer" />
+      :active-section="activeSection" @toggle-collapse="toggleSidebarCollapse" @close-drawer="closeMobileDrawer"
+      @navigate="navigate" />
 
     <!-- ═══════════════════════════════════════════════════════════════════════ -->
     <!-- MAIN CANVAS                                                             -->
     <!-- ═══════════════════════════════════════════════════════════════════════ -->
     <div class="ov-main" :class="mainMargin" id="ov-main-canvas">
 
-      <ManagementHeader :is-rail-collapsed="isRailCollapsed" :selected-year="selectedYear"
+      <ManagementHeader :is-rail-collapsed="isRailCollapsed"
+        :title="activeSection === 'schools' ? 'Schools & Classes' : 'Management Overview'" :selected-year="selectedYear"
         :academic-years="academicYears" :is-loading-academic-years="isLoadingAcademicYears"
         :academic-year-error="academicYearError" :can-manage-calendar="canManageCalendar" :theme-mode="themeMode"
         :display-name="displayName" :user-initials="userInitials" @open-mobile-drawer="openMobileDrawer"
@@ -402,230 +767,513 @@ watch(themeMode, (mode) => applyTheme(mode))
         @create-academic-year="openCreateAcademicYear" @change-theme="applyTheme" @sign-out="emit('returnToSignIn')" />
 
       <!-- SCROLLABLE WORKSPACE -->
-      <main class="ov-workspace" id="overview">
-        <section v-if="isCreateAcademicYearOpen" class="ov-create-year-panel" aria-labelledby="ov-create-year-title">
-          <div class="ov-create-year-heading">
-            <div>
-              <h2 id="ov-create-year-title">Create academic year</h2>
-              <p>Set the name and date range for a production academic year.</p>
+      <main class="ov-workspace" :id="activeSection">
+        <SchoolsView v-if="activeSection === 'schools'" :current-user="props.currentUser" />
+        <template v-else>
+          <section v-if="isCreateAcademicYearOpen" class="ov-create-year-panel" aria-labelledby="ov-create-year-title">
+            <div class="ov-create-year-heading">
+              <div>
+                <h2 id="ov-create-year-title">Create academic year</h2>
+                <p>Set the name and date range for a production academic year.</p>
+              </div>
             </div>
-          </div>
 
-          <form class="ov-create-year-form" @submit.prevent="submitCreateAcademicYear">
-            <label class="ov-form-field">
-              <span>Academic year name</span>
-              <input v-model.trim="newAcademicYearName" type="text" maxlength="50" placeholder="e.g. 2026–27"
-                required />
-            </label>
+            <form class="ov-create-year-form" @submit.prevent="submitCreateAcademicYear">
+              <label class="ov-form-field">
+                <span>Academic year name</span>
+                <input v-model.trim="newAcademicYearName" type="text" maxlength="50" placeholder="e.g. 2026–27"
+                  required />
+              </label>
 
-            <label class="ov-form-field">
-              <span>Start date</span>
-              <input v-model="newAcademicYearStartDate" type="date" required />
-            </label>
+              <label class="ov-form-field">
+                <span>Start date</span>
+                <input v-model="newAcademicYearStartDate" type="date" required />
+              </label>
 
-            <label class="ov-form-field">
-              <span>End date</span>
-              <input v-model="newAcademicYearEndDate" type="date" :min="newAcademicYearStartDate || undefined"
-                required />
-            </label>
+              <label class="ov-form-field">
+                <span>End date</span>
+                <input v-model="newAcademicYearEndDate" type="date" :min="newAcademicYearStartDate || undefined"
+                  required />
+              </label>
 
-            <label class="ov-form-checkbox">
-              <input v-model="newAcademicYearIsActive" type="checkbox" />
-              <span>Active academic year</span>
-            </label>
+              <label class="ov-form-checkbox">
+                <input v-model="newAcademicYearIsActive" type="checkbox" />
+                <span>Active academic year</span>
+              </label>
 
-            <p v-if="createAcademicYearError" class="ov-create-year-error" role="alert">
-              {{ createAcademicYearError }}
+              <p v-if="createAcademicYearError" class="ov-create-year-error" role="alert">
+                {{ createAcademicYearError }}
+              </p>
+
+              <div class="ov-create-year-actions">
+                <button type="button" class="ov-form-secondary" :disabled="isCreatingAcademicYear"
+                  @click="closeCreateAcademicYear">
+                  Cancel
+                </button>
+                <button type="submit" class="ov-form-primary" :disabled="isCreatingAcademicYear">
+                  {{ isCreatingAcademicYear ? 'Creating…' : 'Create academic year' }}
+                </button>
+              </div>
+            </form>
+          </section>
+          <!-- ─── Overview Filters ───────────────────────────────────────────── -->
+          <section class="ov-filter-panel" aria-label="Overview filters">
+            <div class="ov-filter-heading">
+              <div>
+                <h2>Dashboard Filters</h2>
+                <p>Refine reporting by period, school and teaching assignment.</p>
+              </div>
+
+              <button type="button" class="ov-filter-clear" @click="clearOverviewFilters">
+                Clear filters
+              </button>
+            </div>
+
+            <div class="ov-filter-grid">
+              <label class="ov-filter-field">
+                <span>Start date</span>
+                <input v-model="filterStartDate" type="date" :min="selectedAcademicYear?.start_date"
+                  :max="filterEndDate || selectedAcademicYear?.end_date" :disabled="!selectedYear" />
+              </label>
+
+              <label class="ov-filter-field">
+                <span>End date</span>
+                <input v-model="filterEndDate" type="date" :min="filterStartDate || selectedAcademicYear?.start_date"
+                  :max="selectedAcademicYear?.end_date" :disabled="!selectedYear" />
+              </label>
+
+              <label class="ov-filter-field">
+                <span>School</span>
+                <select v-model="selectedSchoolId" :disabled="isLoadingFilters">
+                  <option value="">All authorized schools</option>
+                  <option v-for="school in schools" :key="school.id" :value="school.id">
+                    {{ school.school_name }}
+                  </option>
+                </select>
+              </label>
+
+              <label class="ov-filter-field">
+                <span>Class / Division</span>
+                <select v-model="selectedClassDivisionId" :disabled="!selectedSchoolId || isLoadingFilters">
+                  <option value="">All classes</option>
+                  <option v-for="division in availableClassDivisions" :key="division.id" :value="division.id">
+                    Class {{ division.class_level }} – {{ division.division }}
+                  </option>
+                </select>
+              </label>
+
+              <label class="ov-filter-field">
+                <span>Para-teacher</span>
+                <select v-model="selectedParaTeacherId" :disabled="isLoadingReports || !paraTeacherOptions.length">
+                  <option value="">All para-teachers</option>
+                  <option v-for="teacher in availableParaTeachers" :key="teacher.para_teacher_id"
+                    :value="teacher.para_teacher_id">
+                    {{ teacher.para_teacher_name || teacher.para_teacher_code || 'Unnamed para-teacher' }}
+                  </option>
+                </select>
+              </label>
+            </div>
+            <p v-if="selectedParaTeacherId" class="ov-filter-hint">
+              Attendance figures remain scoped to the selected school and class.
+              Para-teacher selection does not filter attendance records.
             </p>
-
-            <div class="ov-create-year-actions">
-              <button type="button" class="ov-form-secondary" :disabled="isCreatingAcademicYear"
-                @click="closeCreateAcademicYear">
-                Cancel
-              </button>
-              <button type="submit" class="ov-form-primary" :disabled="isCreatingAcademicYear">
-                {{ isCreatingAcademicYear ? 'Creating…' : 'Create academic year' }}
-              </button>
+            <p v-if="filterOptionsError || dateRangeError || paraTeacherOptionsError" class="ov-filter-error"
+              role="alert">
+              {{
+                [
+                  filterOptionsError,
+                  dateRangeError,
+                  paraTeacherOptionsError,
+                ].filter(Boolean).join(' ')
+              }}
+            </p>
+          </section>
+          <!-- ─── Live Reporting Status ───────────────────────────────────────── -->
+          <div class="ov-preview-banner" role="status" aria-live="polite">
+            <div class="ov-preview-banner-left">
+              <span class="material-symbols-outlined ov-preview-icon" aria-hidden="true">
+                {{ reportingErrorMessages.length || academicYearError ? 'warning' : 'info' }}
+              </span>
+              <span>{{ reportBannerText }}</span>
             </div>
-          </form>
-        </section>
-        <!-- ─── Live Reporting Status ───────────────────────────────────────── -->
-        <div class="ov-preview-banner" role="status" aria-live="polite">
-          <div class="ov-preview-banner-left">
-            <span class="material-symbols-outlined ov-preview-icon" aria-hidden="true">
-              {{ reportingErrorMessages.length || academicYearError ? 'warning' : 'info' }}
+            <span class="ov-preview-badge">
+              {{
+                isLoadingReports
+                  ? 'Loading'
+                  : reportingErrorMessages.length
+                    ? 'Partial data'
+                    : academicYearError
+                      ? 'Unavailable'
+                      : 'Live API'
+              }}
             </span>
-            <span>{{ reportBannerText }}</span>
           </div>
-          <span class="ov-preview-badge">
-            {{
-              isLoadingReports
-                ? 'Loading'
-                : reportingErrorMessages.length
-                  ? 'Partial data'
-                  : academicYearError
-                    ? 'Unavailable'
-                    : 'Live API'
-            }}
-          </span>
-        </div>
 
-        <!-- ─── KPI Cards ──────────────────────────────────────────────────── -->
-        <section class="ov-kpi-grid" aria-label="Key Performance Indicators">
-          <ManagementMetricCard label="Session Delivery" icon="school" icon-tone="accent"
-            :value="deliveryReport ? formatCount(deliveryReport.completed_sessions) : '—'"
-            :value-muted="!deliveryReport || isLoadingReports || !!reportingErrors.delivery" badge-text="Completed"
-            badge-tone="accent"
-            :description="isLoadingReports ? 'Loading delivery report…' : 'Production sessions in the selected academic year'"
-            :footer-items="[
-              { label: 'Planned', value: deliveryReport ? formatCount(deliveryReport.planned_sessions) : '—' },
-              { label: 'In progress', value: deliveryReport ? formatCount(deliveryReport.in_progress_sessions) : '—' },
-              { label: 'Cancelled', value: deliveryReport ? formatCount(deliveryReport.cancelled_sessions) : '—' },
-            ]" />
+          <!-- ─── KPI Cards ──────────────────────────────────────────────────── -->
+          <section class="ov-kpi-grid" aria-label="Key Performance Indicators">
+            <ManagementMetricCard label="Session Delivery" icon="school" icon-tone="accent" :value="deliveryReport
+              ? `${formatCount(deliveryReport.completed_sessions)} / ${formatCount(deliveryReport.total_sessions)}`
+              : '—'" :value-muted="!deliveryReport || isLoadingReports || !!reportingErrors.delivery"
+              badge-text="Completed / Total" badge-tone="accent" :description="isLoadingReports
+                ? 'Loading delivery report…'
+                : 'Completed production sessions out of total production sessions'" :footer-items="[
+                  { label: 'Planned', value: deliveryReport ? formatCount(deliveryReport.planned_sessions) : '—' },
+                  { label: 'In progress', value: deliveryReport ? formatCount(deliveryReport.in_progress_sessions) : '—' },
+                  { label: 'Cancelled', value: deliveryReport ? formatCount(deliveryReport.cancelled_sessions) : '—' },
+                ]" />
 
-          <ManagementMetricCard label="Attendance Records" icon="how_to_reg" icon-tone="accent"
-            :value="attendanceReport ? formatCount(attendanceReport.eligible_record_count) : '—'"
-            :value-muted="!attendanceReport || isLoadingReports || !!reportingErrors.attendance" badge-text="Records"
-            badge-tone="neutral"
-            :description="attendanceReport ? `${formatCount(attendanceReport.attendance_percentage)}% present` : 'Eligible attendance records; not student headcount'"
-            :footer-items="[
-              { label: 'Present', value: attendanceReport ? formatCount(attendanceReport.present_record_count) : '—', valueTone: 'green' },
-              { label: 'Absent', value: attendanceReport ? formatCount(attendanceReport.absent_record_count) : '—' },
-            ]" />
+            <ManagementMetricCard label="Attendance Rate" icon="how_to_reg" icon-tone="accent" :value="attendanceReport
+              ? `${attendanceReport.attendance_percentage.toFixed(1)}%`
+              : '—'" :value-muted="!attendanceReport || isLoadingReports || !!reportingErrors.attendance"
+              badge-text="Record-weighted" badge-tone="neutral" :description="attendanceReport
+                ? 'Present attendance records as a percentage of eligible records; not unique-student headcount'
+                : 'Attendance reporting unavailable'" :footer-items="[
+                  { label: 'Present records', value: attendanceReport ? formatCount(attendanceReport.present_record_count) : '—', valueTone: 'green' },
+                  { label: 'Absent records', value: attendanceReport ? formatCount(attendanceReport.absent_record_count) : '—' },
+                  { label: 'Eligible records', value: attendanceReport ? formatCount(attendanceReport.eligible_record_count) : '—' },
+                ]" />
 
-          <ManagementMetricCard label="Engagement Score" icon="psychology" icon-tone="terra"
-            :value="engagementReport?.average_engagement == null ? '—' : engagementReport.average_engagement.toFixed(2)"
-            :value-muted="engagementReport?.average_engagement == null || isLoadingReports || !!reportingErrors.engagement"
-            denominator="/ 10" :badge-text="engagementReport?.average_engagement == null ? 'No scores' : 'Reported'"
-            badge-tone="neutral"
-            :description="engagementReport?.average_engagement == null ? 'No scored sessions for this period' : 'Average recorded engagement score'"
-            :footer-items="[
-              { label: 'Scored sessions', value: engagementReport ? formatCount(engagementReport.scored_session_count) : '—' },
-              { label: 'Missing scores', value: engagementReport ? formatCount(engagementReport.missing_engagement_count) : '—', valueTone: 'muted' },
-            ]" />
+            <ManagementMetricCard label="Engagement Score" icon="psychology" icon-tone="terra"
+              :value="engagementReport?.average_engagement == null ? '—' : engagementReport.average_engagement.toFixed(2)"
+              :value-muted="engagementReport?.average_engagement == null || isLoadingReports || !!reportingErrors.engagement"
+              denominator="/ 10" :badge-text="engagementReport?.average_engagement == null ? 'No scores' : 'Reported'"
+              badge-tone="neutral"
+              :description="engagementReport?.average_engagement == null ? 'No scored sessions for this period' : 'Average recorded engagement score'"
+              :footer-items="[
+                { label: 'Scored sessions', value: engagementReport ? formatCount(engagementReport.scored_session_count) : '—' },
+                { label: 'Missing scores', value: engagementReport ? formatCount(engagementReport.missing_engagement_count) : '—', valueTone: 'muted' },
+              ]" />
 
-          <ManagementMetricCard label="Duration Recorded" icon="fact_check" icon-tone="accent"
-            :value="deliveryReport ? formatCount(deliveryReport.completed_sessions_with_duration) : '—'"
-            :value-muted="!deliveryReport || isLoadingReports || !!reportingErrors.delivery" badge-text="Recorded"
-            badge-tone="neutral"
-            :description="deliveryReport ? 'Completed sessions with duration entered' : 'Duration reporting unavailable'"
-            :footer-items="[
-              { label: 'Completed', value: deliveryReport ? formatCount(deliveryReport.completed_sessions) : '—' },
-              { label: 'Teaching hours', value: deliveryReport ? formatCount(deliveryReport.teaching_hours) : '—' },
-            ]" />
-        </section>
+            <ManagementMetricCard label="Teaching Hours" icon="schedule" icon-tone="accent"
+              :value="deliveryReport ? formatCount(deliveryReport.teaching_hours) : '—'"
+              :value-muted="!deliveryReport || isLoadingReports || !!reportingErrors.delivery" denominator="hrs"
+              badge-text="Recorded" badge-tone="neutral" :description="deliveryReport
+                ? 'Total recorded duration of completed sessions'
+                : 'Teaching-hour reporting unavailable'" :footer-items="[
+                  { label: 'Completed sessions', value: deliveryReport ? formatCount(deliveryReport.completed_sessions) : '—' },
+                  { label: 'Sessions with duration', value: deliveryReport ? formatCount(deliveryReport.completed_sessions_with_duration) : '—' },
+                ]" />
+            <ManagementMetricCard label="TLM Recording Completeness" icon="inventory_2" icon-tone="terra" :value="tlmReport
+              ? `${tlmReport.recording_completeness_percentage.toFixed(1)}%`
+              : '—'" :value-muted="!tlmReport || isLoadingReports || !!reportingErrors.tlm" badge-text="Recorded / N/A"
+              badge-tone="neutral" :description="tlmReport
+                ? 'Eligible sessions with TLM recorded or explicitly marked not applicable'
+                : 'TLM recording data unavailable'" :footer-items="[
+                  {
+                    label: 'Sessions with TLM',
+                    value: tlmReport ? formatCount(tlmReport.sessions_with_tlm) : '—',
+                  },
+                  {
+                    label: 'Explicit N/A',
+                    value: tlmReport ? formatCount(tlmReport.explicit_na_sessions) : '—',
+                  },
+                  {
+                    label: 'Missing recording',
+                    value: tlmReport ? formatCount(tlmReport.missing_tlm_sessions) : '—',
+                    valueTone: 'muted',
+                  },
+                  {
+                    label: 'Eligible sessions',
+                    value: tlmReport ? formatCount(tlmReport.eligible_sessions) : '—',
+                  },
+                ]" />
+            <ManagementMetricCard label="Active Schools" icon="domain" icon-tone="accent" :value="isLoadingFilters || filterOptionsError
+              ? '—'
+              : formatCount(activeSchoolsCount)" :value-muted="isLoadingFilters || !!filterOptionsError"
+              badge-text="Production" badge-tone="neutral"
+              description="Authorized active production schools in the selected school scope" :footer-items="[
+                {
+                  label: 'Population metric',
+                  value: 'Current',
+                },
+              ]" />
 
-        <!-- ─── Session Delivery Trajectory Chart ─────────────────────────── -->
-        <DeliveryTrajectoryChart :items="deliveryTrend" :start-date="selectedAcademicYear?.start_date ?? ''"
-          :end-date="selectedAcademicYear?.end_date ?? ''" :loading="isLoadingReports" :error="reportingErrors.trend" />
+            <ManagementMetricCard label="Active Students" icon="groups" icon-tone="accent" :value="activeStudentsCount === null
+              ? '—'
+              : formatCount(activeStudentsCount)" :value-muted="activeStudentsCount === null || isLoadingReports"
+              badge-text="Active divisions" badge-tone="neutral" :description="classMonitoringError
+                ? 'Active student data unavailable'
+                : 'Active production students in active production class divisions'" :footer-items="[
+                  {
+                    label: 'Scope',
+                    value: selectedSchoolId ? 'Selected school' : 'Authorized schools',
+                  },
+                  {
+                    label: 'Para-teacher filter',
+                    value: 'Not applied',
+                  },
+                ]" />
 
-        <!-- ─── Operational Attention ───────────────────────────────────────── -->
-        <section class="ov-attention-grid" aria-label="Operational attention">
-          <ManagementAttentionPanel>
-            <div class="ov-panel-header">
-              <div class="ov-panel-title-wrap">
-                <span class="material-symbols-outlined ov-panel-icon ov-panel-icon--amber"
-                  aria-hidden="true">event_busy</span>
-                <h3 class="ov-panel-title">Academic Planning Bottlenecks</h3>
+            <ManagementMetricCard label="Evidence Coverage" icon="fact_check" icon-tone="terra" :value="evidenceCoverageStats?.percentage == null
+              ? '—'
+              : `${evidenceCoverageStats.percentage.toFixed(1)}%`" :value-muted="!evidenceCoverageStats ||
+                evidenceCoverageStats.percentage == null ||
+                isLoadingReports" badge-text="Evidence recorded" badge-tone="neutral" :description="classMonitoringError
+                  ? 'Evidence coverage data unavailable'
+                  : 'Completed sessions with evidence as a percentage of eligible completed sessions'" :footer-items="[
+                    {
+                      label: 'Sessions with evidence',
+                      value: evidenceCoverageStats
+                        ? formatCount(evidenceCoverageStats.withEvidence)
+                        : '—',
+                    },
+                    {
+                      label: 'Eligible completed',
+                      value: evidenceCoverageStats
+                        ? formatCount(evidenceCoverageStats.eligible)
+                        : '—',
+                    },
+                    {
+                      label: 'Para-teacher filter',
+                      value: 'Not applied',
+                    },
+                  ]" />
+          </section>
+
+          <!-- ─── Session Delivery Trajectory Chart ─────────────────────────── -->
+          <div id="overview-reporting" class="ov-reporting-anchor">
+            <template v-if="canViewReports">
+              <DeliveryTrajectoryChart :items="deliveryTrend" :start-date="selectedAcademicYear?.start_date ?? ''"
+                :end-date="selectedAcademicYear?.end_date ?? ''" :filter-start-date="filterStartDate"
+                :filter-end-date="filterEndDate" :loading="isLoadingReports" :error="reportingErrors.trend" />
+
+              <section class="ov-reporting-grid" aria-label="Reporting analysis">
+                <AttendanceAnalysisChart :report="attendanceReport" :loading="isLoadingReports"
+                  :error="reportingErrors.attendance" />
+
+                <EngagementDistributionChart :report="engagementReport" :loading="isLoadingReports"
+                  :error="reportingErrors.engagement" />
+
+                <SchoolClassPerformanceChart :items="classMonitoringItems" :loading="isLoadingReports"
+                  :error="classMonitoringError" :para-teacher-selected="!!selectedParaTeacherId" />
+
+                <AssessmentProgressSummary :items="classMonitoringItems" :loading="isLoadingReports"
+                  :error="classMonitoringError" :para-teacher-selected="!!selectedParaTeacherId" />
+              </section>
+            </template>
+
+            <section v-else class="ov-reporting-restricted" role="status">
+              <h3>Reporting access restricted</h3>
+              <p>
+                Your account does not have permission to view management reporting.
+              </p>
+            </section>
+          </div>
+
+          <!-- ─── Operational Attention ───────────────────────────────────────── -->
+          <section class="ov-attention-grid" aria-label="Operational attention">
+
+            <!-- Academic Planning -->
+            <ManagementAttentionPanel>
+              <div class="ov-panel-header">
+                <div class="ov-panel-title-wrap">
+                  <span class="material-symbols-outlined ov-panel-icon ov-panel-icon--amber">
+                    event_available
+                  </span>
+                  <h3 class="ov-panel-title">Academic Planning</h3>
+                </div>
+                <span class="ov-panel-badge ov-panel-badge--accent">
+                  {{ canViewCalendar ? 'Calendar data' : 'Restricted' }}
+                </span>
               </div>
-              <span class="ov-panel-badge ov-panel-badge--terra">Not connected</span>
+
+              <template v-if="canViewCalendar">
+                <p class="ov-panel-item-desc">
+                  {{ selectedAcademicYear?.name ?? 'No academic year selected' }}
+                </p>
+                <p class="ov-panel-item-desc" v-if="isLoadingHolidays">
+                  Loading holiday information…
+                </p>
+                <p class="ov-panel-item-desc" v-else-if="holidaysError">
+                  {{ holidaysError }}
+                </p>
+                <p class="ov-panel-item-desc" v-else>
+                  {{ holidays.length }} active holidays in the active academic year.
+                </p>
+                <p class="ov-panel-item-desc">
+                  Planning bottleneck alerts are not currently calculated.
+                </p>
+              </template>
+
+              <p v-else class="ov-panel-item-desc">
+                Calendar information is not available to your account.
+              </p>
+            </ManagementAttentionPanel>
+
+            <!-- Observations and Inspections -->
+            <ManagementAttentionPanel>
+              <div class="ov-panel-header">
+                <div class="ov-panel-title-wrap">
+                  <span class="material-symbols-outlined ov-panel-icon ov-panel-icon--teal">
+                    biotech
+                  </span>
+                  <h3 class="ov-panel-title">Observations &amp; STEM Inspections</h3>
+                </div>
+                <span class="ov-panel-badge ov-panel-badge--accent">
+                  Live records
+                </span>
+              </div>
+
+              <p v-if="isLoadingOperations" class="ov-panel-item-desc">
+                Loading operational records…
+              </p>
+
+              <template v-else>
+                <p class="ov-panel-item-desc" v-if="canViewObservations">
+                  Classroom observations: {{ observationsError || observations.length }}
+                  <span v-if="!observationsError && observations.length">
+                    ({{Object.entries(observationStatuses)
+                      .map(([status, count]) => `${status}: ${count}`)
+                      .join(' · ')}})
+                  </span>
+                </p>
+
+                <p class="ov-panel-item-desc" v-else>
+                  Classroom observation access is restricted.
+                </p>
+
+                <p class="ov-panel-item-desc" v-if="canViewInspections">
+                  STEM inspections: {{ inspectionsError || inspections.length }}
+                  <span v-if="!inspectionsError && inspections.length">
+                    ({{Object.entries(inspectionStatuses)
+                      .map(([status, count]) => `${status}: ${count}`)
+                      .join(' · ')}})
+                  </span>
+                </p>
+
+                <p class="ov-panel-item-desc" v-else>
+                  STEM inspection access is restricted.
+                </p>
+              </template>
+
+              <p class="ov-panel-item-desc">
+                Counts represent records visible to your account, not pending sign-offs.
+                Dashboard date and school filters are not applied.
+              </p>
+            </ManagementAttentionPanel>
+          </section>
+
+          <!-- ─── Quick Operations Navigation ──────────────────────────────── -->
+          <section class="ov-shortcuts" aria-label="Quick Operations Navigation">
+            <div class="ov-shortcuts-header">
+              <h3 class="ov-shortcuts-title">Quick Operations Navigation</h3>
+              <span class="ov-shortcuts-desc">Direct access to operational ledgers and workflows</span>
             </div>
-            <p class="ov-panel-item-desc">
-              A live planning-alert feed is not connected. No bottlenecks are being asserted by this dashboard.
-            </p>
-          </ManagementAttentionPanel>
+            <div class="ov-shortcuts-grid">
+              <!-- Academic Calendar -->
+              <button v-if="canManageCalendar" type="button" class="ov-shortcut-card ov-shortcut-card--button"
+                @click="openCreateAcademicYear">
+                <div class="ov-shortcut-top">
+                  <div class="ov-shortcut-icon ov-shortcut-icon--accent">
+                    <span class="material-symbols-outlined" aria-hidden="true">
+                      calendar_today
+                    </span>
+                  </div>
+                  <div>
+                    <h4 class="ov-shortcut-title">Academic Calendar</h4>
+                    <p class="ov-shortcut-desc">
+                      Manage academic-year configuration and date ranges
+                    </p>
+                  </div>
+                </div>
+                <div class="ov-shortcut-footer">
+                  <span>Create academic year</span>
+                  <span class="material-symbols-outlined ov-shortcut-arrow">
+                    arrow_forward
+                  </span>
+                </div>
+              </button>
 
-          <ManagementAttentionPanel>
-            <div class="ov-panel-header">
-              <div class="ov-panel-title-wrap">
-                <span class="material-symbols-outlined ov-panel-icon ov-panel-icon--teal"
-                  aria-hidden="true">biotech</span>
-                <h3 class="ov-panel-title">Observations &amp; STEM Inspections</h3>
+              <div v-else class="ov-shortcut-card ov-shortcut-card--unavailable" aria-disabled="true">
+                <div class="ov-shortcut-top">
+                  <div class="ov-shortcut-icon ov-shortcut-icon--accent">
+                    <span class="material-symbols-outlined" aria-hidden="true">
+                      calendar_today
+                    </span>
+                  </div>
+                  <div>
+                    <h4 class="ov-shortcut-title">Academic Calendar</h4>
+                    <p class="ov-shortcut-desc">
+                      Academic-year information is available in the overview.
+                    </p>
+                  </div>
+                </div>
+                <div class="ov-shortcut-footer">
+                  <span>Calendar management restricted</span>
+                </div>
               </div>
-              <span class="ov-panel-badge ov-panel-badge--accent">Not connected</span>
+
+              <!-- Session Planning -->
+              <div class="ov-shortcut-card ov-shortcut-card--unavailable" aria-disabled="true">
+                <div class="ov-shortcut-top">
+                  <div class="ov-shortcut-icon ov-shortcut-icon--neutral">
+                    <span class="material-symbols-outlined" aria-hidden="true">
+                      schedule
+                    </span>
+                  </div>
+                  <div>
+                    <h4 class="ov-shortcut-title">Session Planning</h4>
+                    <p class="ov-shortcut-desc">
+                      Management-wide weekly planning workspace
+                    </p>
+                  </div>
+                </div>
+                <div class="ov-shortcut-footer">
+                  <span>Workspace not available yet</span>
+                </div>
+              </div>
+
+              <!-- Reports & Analytics -->
+              <a href="#overview-reporting" class="ov-shortcut-card">
+                <div class="ov-shortcut-top">
+                  <div class="ov-shortcut-icon ov-shortcut-icon--accent">
+                    <span class="material-symbols-outlined" aria-hidden="true">
+                      analytics
+                    </span>
+                  </div>
+                  <div>
+                    <h4 class="ov-shortcut-title">Reports &amp; Analytics</h4>
+                    <p class="ov-shortcut-desc">
+                      View live session delivery reporting and trajectory
+                    </p>
+                  </div>
+                </div>
+                <div class="ov-shortcut-footer">
+                  <span>View overview reporting</span>
+                  <span class="material-symbols-outlined ov-shortcut-arrow">
+                    arrow_forward
+                  </span>
+                </div>
+              </a>
+
+              <!-- Schools & Classes -->
+              <a href="#schools" class="ov-shortcut-card" @click.prevent="navigate('schools')">
+                <div class="ov-shortcut-top">
+                  <div class="ov-shortcut-icon ov-shortcut-icon--terra">
+                    <span class="material-symbols-outlined" aria-hidden="true">
+                      domain
+                    </span>
+                  </div>
+                  <div>
+                    <h4 class="ov-shortcut-title">Schools &amp; Classes</h4>
+                    <p class="ov-shortcut-desc">
+                      Open the institutional school and class directory
+                    </p>
+                  </div>
+                </div>
+                <div class="ov-shortcut-footer">
+                  <span>Open school directory</span>
+                  <span class="material-symbols-outlined ov-shortcut-arrow">
+                    arrow_forward
+                  </span>
+                </div>
+              </a>
             </div>
-            <p class="ov-panel-item-desc">
-              A live observation and inspection feed is not connected. No pending sign-offs are being inferred.
-            </p>
-          </ManagementAttentionPanel>
-        </section>
+          </section>
 
-        <!-- ─── Quick Operations Navigation ──────────────────────────────── -->
-        <section class="ov-shortcuts" aria-label="Quick Operations Navigation">
-          <div class="ov-shortcuts-header">
-            <h3 class="ov-shortcuts-title">Quick Operations Navigation</h3>
-            <span class="ov-shortcuts-desc">Direct access to operational ledgers and workflows</span>
-          </div>
-          <div class="ov-shortcuts-grid">
-            <a href="#calendar" class="ov-shortcut-card">
-              <div class="ov-shortcut-top">
-                <div class="ov-shortcut-icon ov-shortcut-icon--accent">
-                  <span class="material-symbols-outlined" aria-hidden="true">calendar_today</span>
-                </div>
-                <div>
-                  <h4 class="ov-shortcut-title">Academic Calendar</h4>
-                  <p class="ov-shortcut-desc">Term schedules, examination slots, and holiday calendars</p>
-                </div>
-              </div>
-              <div class="ov-shortcut-footer">
-                <span>{{ selectedAcademicYear?.name ?? 'No year selected' }}</span>
-                <span class="material-symbols-outlined ov-shortcut-arrow" aria-hidden="true">arrow_forward</span>
-              </div>
-            </a>
-            <a href="#planning" class="ov-shortcut-card">
-              <div class="ov-shortcut-top">
-                <div class="ov-shortcut-icon ov-shortcut-icon--neutral">
-                  <span class="material-symbols-outlined" aria-hidden="true">schedule</span>
-                </div>
-                <div>
-                  <h4 class="ov-shortcut-title">Session Planning</h4>
-                  <p class="ov-shortcut-desc">Review weekly lesson allocations and educator timetables</p>
-                </div>
-              </div>
-              <div class="ov-shortcut-footer">
-                <span>Planning feed not connected</span>
-                <span class="material-symbols-outlined ov-shortcut-arrow" aria-hidden="true">arrow_forward</span>
-              </div>
-            </a>
-            <a href="#reports" class="ov-shortcut-card">
-              <div class="ov-shortcut-top">
-                <div class="ov-shortcut-icon ov-shortcut-icon--accent">
-                  <span class="material-symbols-outlined" aria-hidden="true">analytics</span>
-                </div>
-                <div>
-                  <h4 class="ov-shortcut-title">Reports &amp; Analytics</h4>
-                  <p class="ov-shortcut-desc">Export verified attendance and session compliance digests</p>
-                </div>
-              </div>
-              <div class="ov-shortcut-footer">
-                <span>Reports available via live APIs</span>
-                <span class="material-symbols-outlined ov-shortcut-arrow" aria-hidden="true">arrow_forward</span>
-              </div>
-            </a>
-            <a href="#schools" class="ov-shortcut-card">
-              <div class="ov-shortcut-top">
-                <div class="ov-shortcut-icon ov-shortcut-icon--terra">
-                  <span class="material-symbols-outlined" aria-hidden="true">domain</span>
-                </div>
-                <div>
-                  <h4 class="ov-shortcut-title">Schools &amp; Classes</h4>
-                  <p class="ov-shortcut-desc">Manage participating STEM campuses and laboratory centers</p>
-                </div>
-              </div>
-              <div class="ov-shortcut-footer">
-                <span>School directory not connected</span>
-                <span class="material-symbols-outlined ov-shortcut-arrow" aria-hidden="true">arrow_forward</span>
-              </div>
-            </a>
-          </div>
-        </section>
-
-        <!-- ─── Discreet Footer ───────────────────────────────────────────── -->
-        <footer class="ov-footer">
-          <span>Project Vigyan • Academic Operations Console</span>
-          <span>{{ selectedAcademicYear?.name ?? 'No academic year selected' }}</span>
-        </footer>
+        </template>
       </main>
+      <InstitutionalFooter :academic-year="selectedAcademicYear?.name ?? 'No academic year selected'" />
     </div>
   </div>
 </template>
@@ -656,6 +1304,7 @@ watch(themeMode, (mode) => applyTheme(mode))
 
   --ov-brand: #193D30;
   --ov-brand-hover: #122F24;
+  --ov-button-primary-text: #FFFFFF;
   --ov-terra: #C47755;
   --ov-terra-hover: #AA6245;
 
@@ -691,6 +1340,7 @@ watch(themeMode, (mode) => applyTheme(mode))
 
   --ov-brand: #C8A856;
   --ov-brand-hover: #D8BD78;
+  --ov-button-primary-text: #151E19;
   --ov-terra: #E0A080;
   --ov-terra-hover: #EBB69D;
 
@@ -961,6 +1611,49 @@ watch(themeMode, (mode) => applyTheme(mode))
   color: var(--ov-tag-accent-fg);
 }
 
+.ov-reporting-anchor {
+  min-width: 0;
+  scroll-margin-top: 20px;
+}
+
+.ov-reporting-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+  min-width: 0;
+}
+
+.ov-reporting-grid > * {
+  min-width: 0;
+}
+
+.ov-reporting-restricted {
+  padding: 20px;
+  border: 1px solid var(--ov-border);
+  border-radius: 10px;
+  background: var(--ov-bg-surface);
+}
+
+.ov-reporting-restricted h3 {
+  margin: 0;
+  color: var(--ov-text-primary);
+  font-size: 14px;
+}
+
+.ov-reporting-restricted p {
+  margin: 6px 0 0;
+  color: var(--ov-text-secondary);
+  font-size: 12px;
+}
+
+@media (max-width: 767px) {
+  .ov-reporting-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+}
+
 .ov-panel-items {
   display: flex;
   flex-direction: column;
@@ -1155,6 +1848,31 @@ watch(themeMode, (mode) => applyTheme(mode))
   gap: 16px;
 }
 
+.ov-shortcut-card--button {
+  width: 100%;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ov-shortcut-card--unavailable {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.ov-shortcut-card--unavailable:hover {
+  border-color: var(--ov-border);
+}
+
+.ov-shortcut-card--unavailable:hover .ov-shortcut-title {
+  text-decoration: none;
+}
+
+.ov-shortcut-card--unavailable .ov-shortcut-arrow {
+  display: none;
+}
+
 @media (min-width: 640px) {
   .ov-shortcuts-grid {
     grid-template-columns: 1fr 1fr;
@@ -1260,20 +1978,6 @@ watch(themeMode, (mode) => applyTheme(mode))
 .ov-shortcut-arrow {
   font-size: 15px;
   transition: transform 200ms;
-}
-
-/* ─── Footer ──────────────────────────────────────────────────────────────── */
-.ov-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding-top: 12px;
-  border-top: 1px solid var(--ov-border-subtle);
-  font-size: 11px;
-  color: var(--ov-text-muted);
-  margin-top: auto;
 }
 
 /* ════════════════════════════════════════════════════════════════════════════ */
@@ -1422,6 +2126,131 @@ watch(themeMode, (mode) => applyTheme(mode))
 
   .ov-create-year-actions {
     flex-wrap: wrap;
+  }
+}
+
+/* ─── Overview Filters ─────────────────────────────────────────────── */
+.ov-filter-panel {
+  width: 100%;
+  padding: 18px 20px;
+  border: 1px solid var(--ov-border);
+  border-radius: 10px;
+  background: var(--ov-bg-surface);
+}
+
+.ov-filter-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.ov-filter-heading h2 {
+  margin: 0;
+  color: var(--ov-text-primary);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.ov-filter-heading p {
+  margin: 4px 0 0;
+  color: var(--ov-text-muted);
+  font-size: 12px;
+}
+
+.ov-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ov-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  color: var(--ov-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.ov-filter-field input,
+.ov-filter-field select {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--ov-border);
+  border-radius: 7px;
+  background: var(--ov-bg-page);
+  color: var(--ov-text-primary);
+  font: inherit;
+  font-weight: 400;
+}
+
+.ov-filter-field input:focus,
+.ov-filter-field select:focus {
+  outline: 2px solid var(--ov-brand);
+  outline-offset: 1px;
+}
+
+.ov-filter-field select:disabled,
+.ov-filter-field input:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.ov-filter-clear {
+  min-height: 34px;
+  padding: 7px 12px;
+  border: 1px solid var(--ov-border);
+  border-radius: 7px;
+  background: var(--ov-bg-surface);
+  color: var(--ov-text-primary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ov-filter-clear:hover {
+  background: var(--ov-bg-surface-subtle);
+}
+
+.ov-filter-error {
+  margin: 12px 0 0;
+  color: #b42318;
+  font-size: 12px;
+}
+
+.ov-filter-hint {
+  margin: 12px 0 0;
+  color: var(--ov-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 1100px) {
+  .ov-filter-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 767px) {
+  .ov-filter-panel {
+    padding: 15px;
+  }
+
+  .ov-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 420px) {
+  .ov-filter-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>

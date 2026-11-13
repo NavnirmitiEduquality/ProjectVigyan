@@ -36,7 +36,6 @@ class AssessmentValidationError(AssessmentDomainError):
 class AssessmentService:
     REQUIRED_IMPORT_COLUMNS = {
         "student_business_id",
-        "student_name",
         "class",
         "division",
         "aggregate_marks",
@@ -300,9 +299,6 @@ class AssessmentService:
             student_code = self._clean_optional(
                 raw_row.get("student_business_id")
             )
-            student_name = self._clean_required(
-                raw_row.get("student_name")
-            )
             source_class = self._clean_optional(
                 raw_row.get("class")
             )
@@ -319,11 +315,7 @@ class AssessmentService:
             validation_status = "ERROR"
             is_mapped = False
 
-            # ----------------------------------------------------------
-            # First determine the class/division represented by the row.
-            # This is also used later for missing-student reconciliation.
-            # ----------------------------------------------------------
-
+            # Determine the class/division represented by the row.
             class_division = None
             if source_class and source_division and source_class.isdigit():
                 class_division = (
@@ -336,15 +328,16 @@ class AssessmentService:
                     .first()
                 )
 
-            # ----------------------------------------------------------
-            # Student identity / mapping validation
-            # ----------------------------------------------------------
+            # Validate the Student Business ID.
+            if not student_code:
+                message = "student_business_id is required."
+                validation_status = "ERROR"
 
-            if student_code and student_code in seen_codes:
+            elif student_code in seen_codes:
                 message = "Duplicate student_business_id in import."
                 validation_status = "ERROR"
 
-            elif student_code:
+            else:
                 seen_codes.add(student_code)
 
                 student = (
@@ -353,90 +346,64 @@ class AssessmentService:
                     .first()
                 )
 
-                if student and student.class_division.school_id != assessment.school_id:
-                    student = None
+                if not student:
                     message = (
-                        "Student is not enrolled in the selected school."
-                    )
-                    validation_status = "ERROR"
-
-                elif student and (
-                    (
-                        source_class
-                        and source_class
-                        != str(student.class_division.class_level)
-                    )
-                    or (
-                        source_division
-                        and source_division.upper()
-                        != student.class_division.division.upper()
-                    )
-                ):
-                    message = (
-                        "Student class or division does not match "
-                        "the import row."
-                    )
-                    validation_status = "ERROR"
-
-                elif student and marks_error:
-                    message = marks_error
-                    validation_status = "ERROR"
-
-                elif (
-                    student
-                    and marks is not None
-                    and marks > assessment.maximum_marks
-                ):
-                    message = (
-                        "aggregate_marks cannot exceed maximum_marks."
-                    )
-                    validation_status = "ERROR"
-
-                elif student:
-                    validation_status = "VALID"
-                    is_mapped = True
-
-                else:
-                    # Unknown/unmatched student is a warning because
-                    # manual mapping is permitted.
-                    message = (
-                        "Student could not be matched; "
-                        "manual mapping is required."
+                        "Student Business ID could not be matched. "
+                        "Correct the ID before mapping."
                     )
                     validation_status = "WARNING"
 
-            else:
-                # Missing business ID prevents automatic mapping but does
-                # not make the row an automatic hard failure.
-                message = (
-                    "student_business_id is required for automatic mapping."
-                )
-                validation_status = "WARNING"
+                elif (
+                    student.status != "ACTIVE"
+                    or student.data_origin != "PRODUCTION"
+                ):
+                    message = (
+                        "Student is not an active production student."
+                    )
+                    validation_status = "ERROR"
+                    student = None
 
-            # ----------------------------------------------------------
-            # Required field / marks validation has final precedence.
-            # ----------------------------------------------------------
+                elif student.class_division.school_id != assessment.school_id:
+                    message = "Student is not enrolled in the selected school."
+                    validation_status = "ERROR"
+                    student = None
 
-            if not student_name:
-                message = "student_name is required."
-                validation_status = "ERROR"
+                elif (
+                    source_class
+                    and source_class != str(student.class_division.class_level)
+                ) or (
+                    source_division
+                    and source_division.upper()
+                    != student.class_division.division.upper()
+                ):
+                    message = (
+                        "Student class or division does not match the import row."
+                    )
+                    validation_status = "ERROR"
 
-            elif marks_error:
+                elif marks_error:
+                    message = marks_error
+                    validation_status = "ERROR"
+
+                elif marks is not None and marks > assessment.maximum_marks:
+                    message = "aggregate_marks cannot exceed maximum_marks."
+                    validation_status = "ERROR"
+
+                else:
+                    validation_status = "VALID"
+                    is_mapped = True
+
+            # Validate marks independently of identity.
+            if marks_error:
                 message = marks_error
                 validation_status = "ERROR"
-
-            elif (
-                marks is not None
-                and marks > assessment.maximum_marks
-            ):
-                message = (
-                    "aggregate_marks cannot exceed maximum_marks."
-                )
+            elif marks is not None and marks > assessment.maximum_marks:
+                message = "aggregate_marks cannot exceed maximum_marks."
                 validation_status = "ERROR"
 
             resolved_division_id = (
                 student.class_division_id
-                if student is not None
+                if student is not None and is_mapped
                 else (
                     class_division.id
                     if class_division is not None
@@ -448,16 +415,14 @@ class AssessmentService:
                 resolved_division_id is not None
                 and resolved_division_id not in scoped_division_ids
             ):
-                message = (
-                    "Import row is outside the selected assessment scope."
-                )
+                message = "Import row is outside the selected assessment scope."
                 validation_status = "ERROR"
                 is_mapped = False
+
             import_row = AssessmentImportRow(
                 assessment_import_id=import_record.id,
                 row_number=row_number,
                 student_business_id=student_code,
-                source_student_name=student_name,
                 source_class=source_class,
                 source_division=source_division,
                 aggregate_marks=marks,
@@ -522,12 +487,7 @@ class AssessmentService:
                     AssessmentImportRow(
                         assessment_import_id=import_record.id,
                         row_number=next_row_number,
-                        student_business_id=(
-                            missing_student.student_code
-                        ),
-                        source_student_name=(
-                            missing_student.full_name
-                        ),
+                        student_business_id=missing_student.student_code,
                         source_class=str(
                             missing_student.class_division.class_level
                         ),
@@ -537,9 +497,10 @@ class AssessmentService:
                         aggregate_marks=None,
                         student_id=None,
                         class_division_id=class_division_id,
-                        validation_status="WARNING",
+                        validation_status="ERROR",
                         validation_message=(
-                            "Student is missing from the import."
+                            "Student is missing from the import. "
+                            "Include this student's Business ID and marks."
                         ),
                         is_mapped=False,
                         warning_acknowledged=False,
@@ -547,8 +508,7 @@ class AssessmentService:
                 )
 
                 next_row_number += 1
-                import_record.warning_count += 1
-
+                import_record.error_count += 1
         import_record.total_rows = len(import_record.rows)
 
         self.db.flush()
@@ -568,6 +528,187 @@ class AssessmentService:
     # ------------------------------------------------------------------
     # Manual mapping
     # ------------------------------------------------------------------
+
+    def update_row_student_business_id(
+        self,
+        *,
+        import_row_id: UUID,
+        student_business_id: str,
+    ) -> AssessmentImportRow:
+        row = self.db.get(
+            AssessmentImportRow,
+            import_row_id,
+        )
+
+        if not row:
+            raise AssessmentNotFoundError(
+                "Import row not found."
+            )
+
+        assessment = row.assessment_import.assessment
+        import_record = row.assessment_import
+
+        self._ensure_editable(assessment)
+
+        if import_record.status != "VALIDATED":
+            raise AssessmentValidationError(
+                "This import is no longer editable. Re-import and validate "
+                "the results under the current assessment scope."
+            )
+
+        student_business_id = self._clean_optional(
+            student_business_id
+        )
+
+        if not student_business_id:
+            raise AssessmentValidationError(
+                "Student Business ID is required."
+            )
+
+        # Find another row carrying the corrected Business ID.
+        duplicate_code = (
+            self.db.query(AssessmentImportRow)
+            .filter(
+                AssessmentImportRow.assessment_import_id
+                == import_record.id,
+                AssessmentImportRow.student_business_id
+                == student_business_id,
+                AssessmentImportRow.id != row.id,
+            )
+            .first()
+        )
+
+        reconciliation_placeholder = None
+
+        if duplicate_code:
+            is_reconciliation_placeholder = (
+                duplicate_code.aggregate_marks is None
+                and duplicate_code.student_id is None
+                and duplicate_code.is_mapped is False
+                and duplicate_code.validation_status == "ERROR"
+                and duplicate_code.validation_message
+                == (
+                    "Student is missing from the import. "
+                    "Include this student's Business ID and marks."
+                )
+            )
+
+            if not is_reconciliation_placeholder:
+                raise AssessmentValidationError(
+                    "Duplicate Student Business ID in import."
+                )
+
+            reconciliation_placeholder = duplicate_code
+
+        # Resolve the exact production student.
+        student = (
+            self.db.query(Student)
+            .filter(
+                Student.student_code == student_business_id
+            )
+            .first()
+        )
+
+        if not student:
+            row.student_business_id = student_business_id
+            row.student_id = None
+            row.is_mapped = False
+            row.validation_status = "WARNING"
+            row.validation_message = (
+                "Student Business ID could not be matched. "
+                "Correct the ID before mapping."
+            )
+            row.warning_acknowledged = False
+
+            self._refresh_import_counts(import_record)
+            self.db.flush()
+            return row
+
+        if (
+            student.status != "ACTIVE"
+            or student.data_origin != "PRODUCTION"
+        ):
+            raise AssessmentValidationError(
+                "Only active production students can be mapped."
+            )
+
+        if student.class_division.school_id != assessment.school_id:
+            raise AssessmentValidationError(
+                "Student is not enrolled in the assessment school."
+            )
+
+        if (
+            row.source_class
+            and row.source_class
+            != str(student.class_division.class_level)
+        ) or (
+            row.source_division
+            and row.source_division.upper()
+            != student.class_division.division.upper()
+        ):
+            raise AssessmentValidationError(
+                "Student class or division does not match "
+                "the import row."
+            )
+
+        scoped_division_ids = {
+            scope.class_division_id
+            for scope in assessment.class_division_scopes
+        }
+
+        if student.class_division_id not in scoped_division_ids:
+            raise AssessmentValidationError(
+                "Student is outside the selected assessment scope."
+            )
+
+        if (
+            row.aggregate_marks is None
+            or row.aggregate_marks < 0
+            or row.aggregate_marks > assessment.maximum_marks
+        ):
+            raise AssessmentValidationError(
+                "Import row has an invalid aggregate_marks value."
+            )
+
+        # Prevent duplicate mapping across imports for this assessment.
+        duplicate_mapping = (
+            self.db.query(AssessmentImportRow)
+            .join(AssessmentImport)
+            .filter(
+                AssessmentImport.assessment_id == assessment.id,
+                AssessmentImportRow.student_id == student.id,
+                AssessmentImportRow.id != row.id,
+            )
+            .first()
+        )
+
+        if duplicate_mapping and (
+            reconciliation_placeholder is None
+            or duplicate_mapping.id != reconciliation_placeholder.id
+        ):
+            raise AssessmentValidationError(
+                "Each student may have only one result per assessment."
+            )
+
+        # All validations have passed. Remove only the generated
+        # reconciliation placeholder, retaining the original uploaded row.
+        if reconciliation_placeholder is not None:
+            self.db.delete(reconciliation_placeholder)
+            self.db.flush()
+
+        row.student_business_id = student_business_id
+        row.student_id = student.id
+        row.class_division_id = student.class_division_id
+        row.is_mapped = True
+        row.validation_status = "VALID"
+        row.validation_message = None
+        row.warning_acknowledged = False
+
+        self._refresh_import_counts(import_record)
+        self.db.flush()
+
+        return row
+
 
     def map_row(
         self,
@@ -599,6 +740,24 @@ class AssessmentService:
         if not student:
             raise AssessmentValidationError(
                 "Student not found."
+            )
+        if not row.student_business_id:
+            raise AssessmentValidationError(
+                "The import row must contain a Student Business ID."
+            )
+
+        if row.student_business_id != student.student_code:
+            raise AssessmentValidationError(
+                "The imported Student Business ID does not match "
+                "the selected student."
+            )
+
+        if (
+            student.status != "ACTIVE"
+            or student.data_origin != "PRODUCTION"
+        ):
+            raise AssessmentValidationError(
+                "Only active production students can be mapped."
             )
 
         if student.class_division.school_id != assessment.school_id:
@@ -744,6 +903,7 @@ class AssessmentService:
 
         assessment = row.assessment_import.assessment
         self._ensure_editable(assessment)
+
         if row.assessment_import.status != "VALIDATED":
             raise AssessmentValidationError(
                 "This import is no longer editable. Re-import and validate "
@@ -769,16 +929,118 @@ class AssessmentService:
 
         row.aggregate_marks = aggregate_marks
 
-        # Do NOT turn every mapped row into MAPPED.
-        #
-        # A previously valid row remains VALID.
-        # A warning/mapped row remains subject to its existing
-        # acknowledgement workflow.
-        if row.is_mapped:
-            if row.validation_status == "VALID":
-                row.validation_message = None
-            elif row.validation_status == "MAPPED":
-                row.validation_message = None
+        # Preserve the existing acknowledgement workflow for
+        # previously manually mapped rows.
+        previous_status = row.validation_status
+        previous_acknowledgement = row.warning_acknowledged
+
+        # Resolve the exact Student Business ID.
+        student = None
+
+        if row.student_business_id:
+            student = (
+                self.db.query(Student)
+                .filter(
+                    Student.student_code == row.student_business_id
+                )
+                .first()
+            )
+
+        # An unknown ID cannot be mapped through mark correction.
+        if not student:
+            row.student_id = None
+            row.is_mapped = False
+            row.validation_status = "WARNING"
+            row.validation_message = (
+                "Student Business ID could not be matched. "
+                "Correct the ID before mapping."
+            )
+            row.warning_acknowledged = False
+
+        else:
+            # Validate the matched student.
+            validation_error = None
+
+            if (
+                student.status != "ACTIVE"
+                or student.data_origin != "PRODUCTION"
+            ):
+                validation_error = (
+                    "Student is not an active production student."
+                )
+
+            elif student.class_division.school_id != assessment.school_id:
+                validation_error = (
+                    "Student is not enrolled in the selected school."
+                )
+
+            elif (
+                row.source_class
+                and row.source_class
+                != str(student.class_division.class_level)
+            ) or (
+                row.source_division
+                and row.source_division.upper()
+                != student.class_division.division.upper()
+            ):
+                validation_error = (
+                    "Student class or division does not match "
+                    "the import row."
+                )
+
+            else:
+                scoped_division_ids = {
+                    scope.class_division_id
+                    for scope in assessment.class_division_scopes
+                }
+
+                if student.class_division_id not in scoped_division_ids:
+                    validation_error = (
+                        "Student is outside the selected assessment scope."
+                    )
+
+            if validation_error:
+                row.student_id = None
+                row.is_mapped = False
+                row.validation_status = "ERROR"
+                row.validation_message = validation_error
+                row.warning_acknowledged = False
+
+            else:
+                duplicate_mapping = (
+                    self.db.query(AssessmentImportRow)
+                    .join(AssessmentImport)
+                    .filter(
+                        AssessmentImport.assessment_id == assessment.id,
+                        AssessmentImportRow.student_id == student.id,
+                        AssessmentImportRow.id != row.id,
+                    )
+                    .first()
+                )
+
+                if duplicate_mapping:
+                    row.student_id = None
+                    row.is_mapped = False
+                    row.validation_status = "ERROR"
+                    row.validation_message = (
+                        "Each student may have only one result per assessment."
+                    )
+                    row.warning_acknowledged = False
+
+                else:
+                    row.student_id = student.id
+                    row.class_division_id = student.class_division_id
+                    row.is_mapped = True
+                    row.validation_message = None
+
+                    if previous_status == "MAPPED":
+                        row.validation_status = "MAPPED"
+                        row.warning_acknowledged = (
+                            previous_acknowledgement
+                        )
+                    else:
+                        row.validation_status = "VALID"
+                        row.warning_acknowledged = False
 
         self._refresh_import_counts(
             row.assessment_import
@@ -787,7 +1049,6 @@ class AssessmentService:
         self.db.flush()
 
         return row
-
     # ------------------------------------------------------------------
     # Submission
     # ------------------------------------------------------------------
@@ -846,21 +1107,15 @@ class AssessmentService:
 
             if row.class_division_id not in scoped_division_ids:
                 raise AssessmentValidationError(
-                    "Mapped import rows must belong to the selected "
+                    "Import rows must belong to the selected "
                     "assessment scope."
                 )
 
-            # An unmapped row blocks submission unless it is specifically
-            # an acknowledged "missing from import" warning.
-            if not row.is_mapped:
-                if not (
-                    row.validation_status == "WARNING"
-                    and row.warning_acknowledged
-                    and row.validation_message
-                    == "Student is missing from the import."
-                ):
-                    blocking.append(row)
-                    continue
+            # Every row must be mapped before submission.
+            # Acknowledgement cannot bypass missing students.
+            if not row.is_mapped or row.student_id is None:
+                blocking.append(row)
+                continue
 
             # Warnings/MAPPED rows must be explicitly acknowledged.
             if (
@@ -882,6 +1137,37 @@ class AssessmentService:
             for row in import_record.rows
             if row.is_mapped
         ]
+
+        # --------------------------------------------------------------
+        # 2. Reconcile against the current eligible student roster
+        # --------------------------------------------------------------
+        current_roster = {
+            (student_id, class_division_id)
+            for student_id, class_division_id in (
+                self.db.query(
+                    Student.id,
+                    Student.class_division_id,
+                )
+                .filter(
+                    Student.class_division_id.in_(scoped_division_ids),
+                    Student.status == "ACTIVE",
+                    Student.data_origin == "PRODUCTION",
+                )
+                .all()
+            )
+        }
+
+        imported_roster = {
+            (row.student_id, row.class_division_id)
+            for row in mapped_rows
+        }
+
+        if imported_roster != current_roster:
+            raise AssessmentValidationError(
+                "The active production student roster has changed since "
+                "import validation. Re-import and validate the assessment "
+                "against the current roster before submission."
+            )
 
         for row in import_record.rows:
             if not row.is_mapped:
@@ -936,10 +1222,8 @@ class AssessmentService:
             )
 
         # --------------------------------------------------------------
-        # 5. Create results only for mapped rows
-        #
-        # Acknowledged "Student is missing from the import" rows are
-        # deliberately NOT mapped and therefore produce NO result.
+        # 5. Create results only after complete roster reconciliation.
+        # Every eligible student must have exactly one mapped result.
         # --------------------------------------------------------------
         for row in mapped_rows:
             mapped_student = self.db.get(Student, row.student_id)
@@ -1030,14 +1314,8 @@ class AssessmentService:
             if row.validation_status == "ERROR":
                 return True
 
-            if not row.is_mapped:
-                if not (
-                    row.validation_status == "WARNING"
-                    and row.warning_acknowledged
-                    and row.validation_message
-                    == "Student is missing from the import."
-                ):
-                    return True
+            if not row.is_mapped or row.student_id is None:
+                return True
 
             if (
                 row.validation_status in {"WARNING", "MAPPED"}

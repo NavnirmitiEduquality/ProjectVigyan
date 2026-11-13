@@ -51,16 +51,17 @@ from app.services.session_tlm.service import NA_TLM_NAME
 from tests.test_reporting_attendance import reporting_fixture
 
 
+
 @pytest.fixture
 def domain_fixture(reporting_fixture):
     fixture = reporting_fixture
     db = fixture["db"]
-    para_teacher = (
-        db.query(User).filter(User.user_code.like("RP-PT-%")).one()
-    )
+
+    para_teacher = fixture["para_teacher"]
     para_teacher.data_origin = "PRODUCTION"
     division = fixture["division_one"]
     rows = []
+
     for session_date, status, duration in (
         (date(2026, 6, 1), "COMPLETED", 60),
         (date(2026, 6, 2), "COMPLETED", 90),
@@ -101,14 +102,21 @@ def domain_fixture(reporting_fixture):
             ),
         ]
     )
+
     normal_tlm = TLM(
         name=f"Reporting TLM {division.id}",
         description="Synthetic reporting TLM",
         is_active=True,
         data_origin="PRODUCTION",
     )
+
     created_na_tlm = False
-    na_tlm = db.query(TLM).filter(TLM.name == NA_TLM_NAME).one_or_none()
+    na_tlm = (
+        db.query(TLM)
+        .filter(TLM.name == NA_TLM_NAME)
+        .one_or_none()
+    )
+
     if na_tlm is None:
         na_tlm = TLM(
             name=NA_TLM_NAME,
@@ -118,8 +126,10 @@ def domain_fixture(reporting_fixture):
         )
         db.add(na_tlm)
         created_na_tlm = True
+
     db.add(normal_tlm)
     db.flush()
+
     db.add_all(
         [
             SessionTLM(
@@ -142,6 +152,7 @@ def domain_fixture(reporting_fixture):
             ),
         ]
     )
+
     baseline = Assessment(
         academic_year_id=fixture["year"].id,
         school_id=fixture["school_one"].id,
@@ -166,20 +177,20 @@ def domain_fixture(reporting_fixture):
     )
     db.add_all([baseline, endline])
     db.flush()
-    students = (
-        db.query(User)
-        .filter(User.id == para_teacher.id)
-        .one()
-    )
-    del students
+
     school_students = [
         fixture["student_one"],
-        db.query(type(fixture["student_one"]))
-        .filter(type(fixture["student_one"]).class_division_id == division.id)
-        .filter(type(fixture["student_one"]).id != fixture["student_one"].id)
-        .order_by(type(fixture["student_one"]).roll_no)
+        db.query(Student)
+        .filter(Student.class_division_id == division.id)
+        .filter(Student.id != fixture["student_one"].id)
+        .order_by(Student.roll_no)
         .first(),
     ]
+
+    assert all(school_students), (
+        "Reporting fixture requires two students in division_one."
+    )
+
     db.add_all(
         [
             AssessmentResult(
@@ -208,7 +219,9 @@ def domain_fixture(reporting_fixture):
             ),
         ]
     )
+
     db.commit()
+
     yield {
         **fixture,
         "sessions": rows,
@@ -217,35 +230,6 @@ def domain_fixture(reporting_fixture):
         "na_tlm": na_tlm,
         "created_na_tlm": created_na_tlm,
     }
-    db.rollback()
-    db.execute(
-        delete(SessionEvidence).where(
-            SessionEvidence.teaching_session_id.in_([row.id for row in rows])
-        )
-    )
-    db.execute(
-        delete(SessionEngagement).where(
-            SessionEngagement.teaching_session_id.in_([row.id for row in rows])
-        )
-    )
-    db.execute(
-        delete(SessionTLM).where(
-            SessionTLM.teaching_session_id.in_([row.id for row in rows])
-        )
-    )
-    db.execute(
-        delete(AssessmentResult).where(
-            AssessmentResult.assessment_id.in_([baseline.id, endline.id])
-        )
-    )
-    db.execute(delete(Assessment).where(Assessment.id.in_([baseline.id, endline.id])))
-    db.delete(normal_tlm)
-    if created_na_tlm:
-        db.delete(na_tlm)
-    db.query(TeachingSession).filter(
-        TeachingSession.id.in_([row.id for row in rows])
-    ).delete(synchronize_session=False)
-    db.commit()
 
 
 client = TestClient(app)
@@ -263,6 +247,7 @@ def test_para_teacher_filter_respects_school_scope(domain_fixture):
 
     other_para_teacher = User(
         user_code=f"RP-PT-OTHER-{fixture['school_two'].id.hex[:8]}",
+        account_category="PARA_TEACHER",
         full_name="Other School Para Teacher",
         email=f"rp-pt-other-{fixture['school_two'].id.hex[:8]}@example.com",
         password_hash=own_para_teacher.password_hash,
@@ -283,45 +268,38 @@ def test_para_teacher_filter_respects_school_scope(domain_fixture):
     db.add(other_school_session)
     db.commit()
 
-    try:
-        own_school_response = client.get(
-            "/api/v1/reporting/delivery",
-            params={"group_by": "para_teacher", "para_teacher_id": str(own_para_teacher.id)},
-            headers={
-                "Authorization": f"Bearer {fixture['viewer_token']}"
-            },
-        )
+    own_school_response = client.get(
+        "/api/v1/reporting/delivery",
+        params={"group_by": "para_teacher", "para_teacher_id": str(own_para_teacher.id)},
+        headers={
+            "Authorization": f"Bearer {fixture['viewer_token']}"
+        },
+    )
 
-        assert own_school_response.status_code == 200
-        assert own_school_response.json()["items"]
+    assert own_school_response.status_code == 200
+    assert own_school_response.json()["items"]
 
-        cross_school_response = client.get(
-            "/api/v1/reporting/delivery",
-            params={"group_by": "para_teacher", "para_teacher_id": str(other_para_teacher.id)},
-            headers={
-                "Authorization": f"Bearer {fixture['viewer_token']}"
-            },
-        )
+    cross_school_response = client.get(
+        "/api/v1/reporting/delivery",
+        params={"group_by": "para_teacher", "para_teacher_id": str(other_para_teacher.id)},
+        headers={
+            "Authorization": f"Bearer {fixture['viewer_token']}"
+        },
+    )
 
-        assert cross_school_response.status_code == 200
-        assert cross_school_response.json()["items"] == []
+    assert cross_school_response.status_code == 200
+    assert cross_school_response.json()["items"] == []
 
-        project_wide_response = client.get(
-            "/api/v1/reporting/delivery",
-            params={"para_teacher_id": str(other_para_teacher.id)},
-            headers={
-                "Authorization": f"Bearer {fixture['platform_owner_token']}"
-            },
-        )
+    project_wide_response = client.get(
+        "/api/v1/reporting/delivery",
+        params={"para_teacher_id": str(other_para_teacher.id)},
+        headers={
+            "Authorization": f"Bearer {fixture['platform_owner_token']}"
+        },
+    )
 
-        assert project_wide_response.status_code == 200
-        assert project_wide_response.json()["items"]
-
-    finally:
-        db.rollback()
-        db.delete(other_school_session)
-        db.delete(other_para_teacher)
-        db.commit()
+    assert project_wide_response.status_code == 200
+    assert project_wide_response.json()["items"]
 
 
 def test_r2_delivery_metrics_and_groupings(domain_fixture):
@@ -490,17 +468,6 @@ def test_r7_school_monitoring_includes_assessment_evidence_and_para_teacher(
     longitudinal = item["assessment"]["longitudinal"]
     assert longitudinal["matched_students"] == 2
     assert longitudinal["average_percentage_point_change"] == 14.0
-
-    db.rollback()
-    db.query(SessionEvidence).filter(
-        SessionEvidence.teaching_session_id.in_(
-            [session.id for session in completed_sessions[:2]]
-        )
-    ).delete(synchronize_session=False)
-    db.query(Photo).filter(
-        Photo.id.in_([photo.id for photo in photos])
-    ).delete(synchronize_session=False)
-    db.commit()
 
 
 def test_r7_school_monitoring_includes_observation_report_counts(domain_fixture):

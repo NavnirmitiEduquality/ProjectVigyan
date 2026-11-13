@@ -33,6 +33,11 @@ class User(Base):
         index=True,
     )
 
+    account_category: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+    )
+
     full_name: Mapped[str] = mapped_column(
         String(150),
         nullable=False,
@@ -90,6 +95,16 @@ class User(Base):
         CheckConstraint(
             "data_origin IN ('PRODUCTION', 'DEMO', 'TEST')",
             name="ck_user_data_origin",
+        ),
+        CheckConstraint(
+            "account_category IN "
+            "('PLATFORM_OWNER', 'SYSTEM_ADMIN', 'DATA_MANAGER', "
+            "'MANAGEMENT', 'STEM_COORDINATOR', 'PARA_TEACHER')",
+            name="ck_user_account_category",
+        ),
+        CheckConstraint(
+            "status IN ('ACTIVE', 'DISABLED')",
+            name="ck_user_status",
         ),
     )
 

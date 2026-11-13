@@ -1,4 +1,5 @@
 from app.models.auth_session import AuthSession
+from app.models.audit_event import AuditEvent
 from app.models.class_division import ClassDivision
 from app.models.role import Permission, Role, RolePermission
 from app.models.school import School
@@ -46,6 +47,7 @@ __all__ = [
     "ClassDivision",
     "Student",
     "AuthSession",
+    "AuditEvent",
     "TeachingSession",
     "SessionAttendance",
     "SessionEngagement",
