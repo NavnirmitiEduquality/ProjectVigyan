@@ -48,12 +48,14 @@ import EngagementDistributionChart from './EngagementDistributionChart.vue'
 import SchoolClassPerformanceChart from './SchoolClassPerformanceChart.vue'
 import AssessmentProgressSummary from './AssessmentProgressSummary.vue'
 import SchoolsView from './schools/SchoolsView.vue'
+import StudentsDirectory from './students/StudentsDirectory.vue'
+import TeachersDirectory from './teachers/TeachersDirectory.vue'
 import { listSchools, type School } from '../../services/schools'
 import {
   listClassDivisions,
   type ClassDivision,
 } from '../../services/classDivisions'
-type ManagementSection = 'overview' | 'schools'
+type ManagementSection = 'overview' | 'schools' | 'students' | 'teachers'
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 const props = defineProps<{
@@ -68,7 +70,13 @@ const emit = defineEmits<{
 const route = useRoute()
 const router = useRouter()
 const activeSection = computed<ManagementSection>(() =>
-  route.meta.section === 'schools' ? 'schools' : 'overview',
+  route.meta.section === 'schools'
+    ? 'schools'
+    : route.meta.section === 'students'
+      ? 'students'
+      : route.meta.section === 'teachers'
+        ? 'teachers'
+      : 'overview',
 )
 
 // ─── Theme ────────────────────────────────────────────────────────────────────
@@ -759,7 +767,7 @@ onUnmounted(() => {
     <div class="ov-main" :class="mainMargin" id="ov-main-canvas">
 
       <ManagementHeader :is-rail-collapsed="isRailCollapsed"
-        :title="activeSection === 'schools' ? 'Schools & Classes' : 'Management Overview'" :selected-year="selectedYear"
+        :title="activeSection === 'schools' ? 'Schools & Classes' : activeSection === 'students' ? 'Students Directory' : activeSection === 'teachers' ? 'Teachers Directory' : 'Management Overview'" :selected-year="selectedYear"
         :academic-years="academicYears" :is-loading-academic-years="isLoadingAcademicYears"
         :academic-year-error="academicYearError" :can-manage-calendar="canManageCalendar" :theme-mode="themeMode"
         :display-name="displayName" :user-initials="userInitials" @open-mobile-drawer="openMobileDrawer"
@@ -769,6 +777,8 @@ onUnmounted(() => {
       <!-- SCROLLABLE WORKSPACE -->
       <main class="ov-workspace" :id="activeSection">
         <SchoolsView v-if="activeSection === 'schools'" :current-user="props.currentUser" />
+        <StudentsDirectory v-else-if="activeSection === 'students'" :current-user="props.currentUser" />
+        <TeachersDirectory v-else-if="activeSection === 'teachers'" :current-user="props.currentUser" />
         <template v-else>
           <section v-if="isCreateAcademicYearOpen" class="ov-create-year-panel" aria-labelledby="ov-create-year-title">
             <div class="ov-create-year-heading">

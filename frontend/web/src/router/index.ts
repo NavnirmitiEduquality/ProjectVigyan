@@ -31,6 +31,18 @@ const routes: RouteRecordRaw[] = [
       meta: { requiresAuth: true, section: 'schools' },
     },
     {
+      path: '/students',
+      name: 'students',
+      component: RoutePlaceholder,
+      meta: { requiresAuth: true, section: 'students' },
+    },
+    {
+      path: '/teachers',
+      name: 'teachers',
+      component: RoutePlaceholder,
+      meta: { requiresAuth: true, section: 'teachers' },
+    },
+    {
       path: '/:pathMatch(.*)*',
       redirect: '/',
     },
