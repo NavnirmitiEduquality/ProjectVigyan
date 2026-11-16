@@ -39,6 +39,7 @@ import type { AcademicYear } from '../../services/academicCalendar'
 import { isDarkTheme, type ThemeMode } from '../../services/theme'
 import ManagementSidebar from './ManagementSidebar.vue'
 import ManagementHeader from './ManagementHeader.vue'
+import SessionPlanning from './session-planning/SessionPlanning.vue'
 import InstitutionalFooter from '../layout/InstitutionalFooter.vue'
 import ManagementMetricCard from './ManagementMetricCard.vue'
 import DeliveryTrajectoryChart from './DeliveryTrajectoryChart.vue'
@@ -55,7 +56,7 @@ import {
   listClassDivisions,
   type ClassDivision,
 } from '../../services/classDivisions'
-type ManagementSection = 'overview' | 'schools' | 'students' | 'teachers'
+type ManagementSection = 'overview' | 'schools' | 'students' | 'teachers' | 'session-planning'
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 const props = defineProps<{
@@ -76,7 +77,9 @@ const activeSection = computed<ManagementSection>(() =>
       ? 'students'
       : route.meta.section === 'teachers'
         ? 'teachers'
-      : 'overview',
+        : route.meta.section === 'session-planning'
+          ? 'session-planning'
+          : 'overview',
 )
 
 // ─── Theme ────────────────────────────────────────────────────────────────────
@@ -767,16 +770,18 @@ onUnmounted(() => {
     <div class="ov-main" :class="mainMargin" id="ov-main-canvas">
 
       <ManagementHeader :is-rail-collapsed="isRailCollapsed"
-        :title="activeSection === 'schools' ? 'Schools & Classes' : activeSection === 'students' ? 'Students Directory' : activeSection === 'teachers' ? 'Teachers Directory' : 'Management Overview'" :selected-year="selectedYear"
-        :academic-years="academicYears" :is-loading-academic-years="isLoadingAcademicYears"
-        :academic-year-error="academicYearError" :can-manage-calendar="canManageCalendar" :theme-mode="themeMode"
-        :display-name="displayName" :user-initials="userInitials" @open-mobile-drawer="openMobileDrawer"
-        @toggle-sidebar="toggleSidebarCollapse" @update:selected-year="selectedYear = $event"
-        @create-academic-year="openCreateAcademicYear" @change-theme="applyTheme" @sign-out="emit('returnToSignIn')" />
+        :title="activeSection === 'schools' ? 'Schools & Classes' : activeSection === 'students' ? 'Students Directory' : activeSection === 'teachers' ? 'Teachers Directory' : activeSection === 'session-planning' ? 'Session Planning' : 'Management Overview'"
+        :selected-year="selectedYear" :academic-years="academicYears"
+        :is-loading-academic-years="isLoadingAcademicYears" :academic-year-error="academicYearError"
+        :can-manage-calendar="canManageCalendar" :theme-mode="themeMode" :display-name="displayName"
+        :user-initials="userInitials" @open-mobile-drawer="openMobileDrawer" @toggle-sidebar="toggleSidebarCollapse"
+        @update:selected-year="selectedYear = $event" @create-academic-year="openCreateAcademicYear"
+        @change-theme="applyTheme" @sign-out="emit('returnToSignIn')" />
 
       <!-- SCROLLABLE WORKSPACE -->
       <main class="ov-workspace" :id="activeSection">
-        <SchoolsView v-if="activeSection === 'schools'" :current-user="props.currentUser" />
+        <SessionPlanning v-if="activeSection === 'session-planning'" :current-user="props.currentUser" />
+        <SchoolsView v-else-if="activeSection === 'schools'" :current-user="props.currentUser" />
         <StudentsDirectory v-else-if="activeSection === 'students'" :current-user="props.currentUser" />
         <TeachersDirectory v-else-if="activeSection === 'teachers'" :current-user="props.currentUser" />
         <template v-else>
@@ -1634,7 +1639,7 @@ onUnmounted(() => {
   min-width: 0;
 }
 
-.ov-reporting-grid > * {
+.ov-reporting-grid>* {
   min-width: 0;
 }
 

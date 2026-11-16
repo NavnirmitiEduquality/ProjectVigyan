@@ -436,6 +436,20 @@ class SessionPlanService:
         db.delete(item)
         db.flush()
 
+    def ensure_item_editable(
+        self,
+        db: Session,
+        *,
+        para_teacher_id: UUID,
+        item_id: UUID,
+    ) -> SessionPlanItem:
+        item = self._get_item(db, item_id)
+
+        self._ensure_item_owner(item, para_teacher_id)
+        self._ensure_item_editable(db, item)
+
+        return item
+
     # ------------------------------------------------------------------
     # LESSON PLAN CONTENT
     # ------------------------------------------------------------------

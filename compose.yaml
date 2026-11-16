@@ -29,9 +29,15 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:?Set POSTGRES_USER in .env.compose}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.compose}@db:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env.compose}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:?Set POSTGRES_USER in .env.compose}:${POSTGRES_PASSWORD_URLENCODED:?Set POSTGRES_PASSWORD_URLENCODED in .env.compose}@db:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env.compose}
+    volumes:
+      - type: volume
+        source: vigyan_compose_session_plan_attachments
+        target: /app/storage/session_plan_attachments
     expose:
       - "8000"
+    ports:
+      - "127.0.0.1:8000:8000"
     depends_on:
       db:
         condition: service_healthy
@@ -79,7 +85,7 @@ services:
     profiles:
       - tools
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:?Set POSTGRES_USER in .env.compose}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.compose}@db:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env.compose}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:?Set POSTGRES_USER in .env.compose}:${POSTGRES_PASSWORD_URLENCODED:?Set POSTGRES_PASSWORD_URLENCODED in .env.compose}@db:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env.compose}
     command: ["alembic", "upgrade", "head"]
     depends_on:
       db:
@@ -93,3 +99,4 @@ networks:
 
 volumes:
   vigyan_compose_pgdata:
+  vigyan_compose_session_plan_attachments:

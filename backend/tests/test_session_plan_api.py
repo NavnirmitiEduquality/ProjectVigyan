@@ -1,7 +1,7 @@
 from datetime import date, time, timedelta
 import os
 from uuid import UUID
-
+import uuid
 import pytest
 from dotenv import load_dotenv
 from fastapi.testclient import TestClient
@@ -10,11 +10,18 @@ from app.database import SessionLocal
 from app.main import app
 from app.models import (
     ClassDivision,
+    Role,
+    School,
+    SessionPlanAttachment,
+    SessionPlanContent,
     SessionPlanItem,
     SessionPlanWeek,
     TeachingSession,
     User,
+    UserAssignment,
+    UserRole,
 )
+from app.services.auth_service import hash_password
 from app.services.session_plan.service import SessionPlanService
 
 
@@ -32,8 +39,230 @@ if not DEMO_PASSWORD:
 client = TestClient(app)
 
 
-PT001_EMAIL = "pt001@demo.vigyan.com"
-PT002_EMAIL = "pt002@demo.vigyan.com"
+PT001_EMAIL = None
+PT002_EMAIL = None
+
+@pytest.fixture(scope="module", autouse=True)
+def session_plan_api_test_environment():
+    """
+    Provision two isolated TEST Para-Teacher accounts,
+    each with a separate TEST school and three divisions.
+    """
+    global PT001_EMAIL, PT002_EMAIL
+
+    db = SessionLocal()
+    suffix = uuid.uuid4().hex[:12]
+
+    school_ids = []
+    teacher_ids = []
+
+    teacher_configs = {
+        "PT001": {
+            "email": f"pt001-{suffix}@test.vigyan.com",
+            "school_code": f"AP1-{suffix}",
+        },
+        "PT002": {
+            "email": f"pt002-{suffix}@test.vigyan.com",
+            "school_code": f"AP2-{suffix}",
+        },
+    }
+
+    try:
+        teacher_role = (
+            db.query(Role)
+            .filter(Role.code == "PARA_TEACHER")
+            .first()
+        )
+
+        assert teacher_role is not None, (
+            "PARA_TEACHER role must be seeded."
+        )
+
+        for code, config in teacher_configs.items():
+            school = School(
+                school_code=config["school_code"],
+                school_name=f"Session Plan API {code} Test School",
+                status="ACTIVE",
+                data_origin="TEST",
+            )
+            db.add(school)
+            db.flush()
+
+            school_ids.append(school.id)
+
+            for division_name in ["A", "B", "C"]:
+                db.add(
+                    ClassDivision(
+                        school_id=school.id,
+                        class_level=5,
+                        division=division_name,
+                        status="ACTIVE",
+                        data_origin="TEST",
+                    )
+                )
+
+            teacher = User(
+                user_code=f"API-{code}-{suffix}",
+                account_category="PARA_TEACHER",
+                full_name=f"Session Plan API Test {code}",
+                email=config["email"],
+                password_hash=hash_password(DEMO_PASSWORD),
+                status="ACTIVE",
+                data_origin="TEST",
+            )
+
+            db.add(teacher)
+            db.flush()
+
+            teacher_ids.append(teacher.id)
+
+            db.add_all([
+                UserRole(
+                    user_id=teacher.id,
+                    role_id=teacher_role.id,
+                    is_active=True,
+                ),
+                UserAssignment(
+                    user_id=teacher.id,
+                    scope_type="SCHOOL",
+                    school_id=school.id,
+                    start_date=date(2026, 1, 1),
+                    end_date=None,
+                    is_active=True,
+                ),
+            ])
+
+        db.commit()
+
+        PT001_EMAIL = teacher_configs["PT001"]["email"]
+        PT002_EMAIL = teacher_configs["PT002"]["email"]
+
+        print(
+            "\nCreated isolated TEST session-plan API environment "
+            f"({suffix})."
+        )
+
+    except Exception:
+        db.rollback()
+        raise
+
+    finally:
+        db.close()
+
+    yield
+
+    # Remove linked TeachingSessions and planning data first.
+    _cleanup_session_plan_api_state(teacher_ids)
+
+    cleanup_db = SessionLocal()
+
+    try:
+        cleanup_db.query(UserAssignment).filter(
+            UserAssignment.user_id.in_(teacher_ids)
+        ).delete(synchronize_session=False)
+
+        cleanup_db.query(UserRole).filter(
+            UserRole.user_id.in_(teacher_ids)
+        ).delete(synchronize_session=False)
+
+        cleanup_db.query(ClassDivision).filter(
+            ClassDivision.school_id.in_(school_ids)
+        ).delete(synchronize_session=False)
+
+        cleanup_db.query(User).filter(
+            User.id.in_(teacher_ids)
+        ).delete(synchronize_session=False)
+
+        cleanup_db.query(School).filter(
+            School.id.in_(school_ids)
+        ).delete(synchronize_session=False)
+
+        cleanup_db.commit()
+
+        print(
+            "\nRemoved isolated TEST session-plan API environment."
+        )
+
+    except Exception:
+        cleanup_db.rollback()
+        raise
+
+    finally:
+        cleanup_db.close()
+
+
+def _cleanup_session_plan_api_state(teacher_ids):
+    db = SessionLocal()
+
+    try:
+        weeks = (
+            db.query(SessionPlanWeek)
+            .filter(
+                SessionPlanWeek.para_teacher_id.in_(teacher_ids)
+            )
+            .all()
+        )
+
+        week_ids = [week.id for week in weeks]
+
+        if not week_ids:
+            return
+
+        items = (
+            db.query(SessionPlanItem)
+            .filter(
+                SessionPlanItem.session_plan_week_id.in_(week_ids)
+            )
+            .all()
+        )
+
+        item_ids = [item.id for item in items]
+
+        if item_ids:
+            # TeachingSession has a link to SessionPlanItem.
+            db.query(TeachingSession).filter(
+                TeachingSession.session_plan_item_id.in_(item_ids)
+            ).delete(synchronize_session=False)
+
+            contents = (
+                db.query(SessionPlanContent)
+                .filter(
+                    SessionPlanContent.session_plan_item_id.in_(
+                        item_ids
+                    )
+                )
+                .all()
+            )
+
+            content_ids = [content.id for content in contents]
+
+            if content_ids:
+                db.query(SessionPlanAttachment).filter(
+                    SessionPlanAttachment.session_plan_content_id.in_(
+                        content_ids
+                    )
+                ).delete(synchronize_session=False)
+
+                db.query(SessionPlanContent).filter(
+                    SessionPlanContent.id.in_(content_ids)
+                ).delete(synchronize_session=False)
+
+            db.query(SessionPlanItem).filter(
+                SessionPlanItem.id.in_(item_ids)
+            ).delete(synchronize_session=False)
+
+        db.query(SessionPlanWeek).filter(
+            SessionPlanWeek.id.in_(week_ids)
+        ).delete(synchronize_session=False)
+
+        db.commit()
+
+    except Exception:
+        db.rollback()
+        raise
+
+    finally:
+        db.close()
 
 
 def login(email: str) -> str:
@@ -88,7 +317,7 @@ def get_first_class_division(token: str) -> dict:
     return divisions[0]
 
 
-def get_demo_class_divisions_for_school(
+def get_test_class_divisions_for_school(
     db,
     school_id: UUID,
     count: int = 3,
@@ -97,7 +326,7 @@ def get_demo_class_divisions_for_school(
         db.query(ClassDivision)
         .filter(
             ClassDivision.school_id == school_id,
-            ClassDivision.data_origin == "DEMO",
+            ClassDivision.data_origin == "TEST",
         )
         .order_by(ClassDivision.id)
         .limit(count)
@@ -106,7 +335,7 @@ def get_demo_class_divisions_for_school(
 
     if len(divisions) < count:
         pytest.skip(
-            f"Need at least {count} DEMO class divisions "
+            f"Need at least {count} TEST class divisions "
             f"in school {school_id}."
         )
 
@@ -172,7 +401,7 @@ def create_plan_items(
     db = SessionLocal()
 
     try:
-        divisions = get_demo_class_divisions_for_school(
+        divisions = get_test_class_divisions_for_school(
             db,
             school_id,
             count=3,

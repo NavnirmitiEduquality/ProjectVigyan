@@ -1,5 +1,8 @@
 from datetime import date
 import os
+import uuid
+from pathlib import Path
+from sqlalchemy import select
 
 import pytest
 from dotenv import load_dotenv
@@ -9,11 +12,21 @@ from app.database import SessionLocal
 from app.main import app
 from app.models import (
     ClassDivision,
+    Role,
+    School,
     SessionPlanContent,
     SessionPlanItem,
     SessionPlanWeek,
+    SessionPlanAttachment,
     User,
+    UserAssignment,
+    UserRole,
 )
+from app.routers import session_plan as session_plan_router
+from app.services.session_plan.attachment_storage import (
+    SessionPlanAttachmentStorage,
+)
+from app.services.auth_service import hash_password
 
 
 load_dotenv()
@@ -29,29 +42,423 @@ if not DEMO_PASSWORD:
 
 client = TestClient(app)
 
+TEST_PDF = (
+    b"%PDF-1.4\n"
+    b"1 0 obj<</Type/Catalog>>endobj\n"
+    b"trailer<</Root 1 0 R>>\n"
+    b"%%EOF"
+)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def session_plan_test_environment():
+    """
+    Provision isolated TEST schools, class divisions and
+    Para-Teacher accounts for the session-plan CRUD test module.
+    """
+    db = SessionLocal()
+    suffix = uuid.uuid4().hex[:12]
+    password = DEMO_PASSWORD
+
+    school_ids = []
+    teacher_ids = []
+
+    school_codes = {
+        "PT001": f"TST-P1-{suffix}",
+        "PT002": f"TST-P2-{suffix}",
+        "PT003": f"TST-P3-{suffix}",
+        "PT004": f"TST-P4-{suffix}",
+    }
+
+    emails = {
+        code: f"{code.lower()}-{suffix}@test.vigyan.com"
+        for code in PARA_TEACHERS
+    }
+
+    try:
+        teacher_role = (
+            db.query(Role)
+            .filter(Role.code == "PARA_TEACHER")
+            .first()
+        )
+
+        assert teacher_role is not None, (
+            "PARA_TEACHER role must be seeded."
+        )
+
+        for code, school_code in school_codes.items():
+            school = School(
+                school_code=school_code,
+                school_name=f"Session Plan {code} Test School",
+                status="ACTIVE",
+                data_origin="TEST",
+            )
+            db.add(school)
+            db.flush()
+
+            school_ids.append(school.id)
+
+            # PT001 needs two divisions for the ordering test.
+            division_names = (
+                ["A", "B"] if code == "PT001" else ["A"]
+            )
+
+            for division_name in division_names:
+                db.add(
+                    ClassDivision(
+                        school_id=school.id,
+                        class_level=5,
+                        division=division_name,
+                        status="ACTIVE",
+                        data_origin="TEST",
+                    )
+                )
+
+            teacher = User(
+                user_code=f"{code}-{suffix}",
+                account_category="PARA_TEACHER",
+                full_name=f"Session Plan Test {code}",
+                email=emails[code],
+                password_hash=hash_password(password),
+                status="ACTIVE",
+                data_origin="TEST",
+            )
+
+            db.add(teacher)
+            db.flush()
+
+            teacher_ids.append(teacher.id)
+
+            db.add_all([
+                UserRole(
+                    user_id=teacher.id,
+                    role_id=teacher_role.id,
+                    is_active=True,
+                ),
+                UserAssignment(
+                    user_id=teacher.id,
+                    scope_type="SCHOOL",
+                    school_id=school.id,
+                    start_date=date(2026, 1, 1),
+                    end_date=None,
+                    is_active=True,
+                ),
+            ])
+
+            PARA_TEACHERS[code]["email"] = emails[code]
+            PARA_TEACHERS[code]["school_code"] = school_code
+
+        db.commit()
+
+        print(
+            "\nCreated isolated TEST session-plan environment "
+            f"({suffix})."
+        )
+
+    except Exception:
+        db.rollback()
+        raise
+
+    finally:
+        db.close()
+
+    yield
+
+    # Teardown: remove planning data before users and schools.
+    _cleanup_session_plan_state()
+
+    cleanup_db = SessionLocal()
+
+    try:
+        cleanup_db.query(ClassDivision).filter(
+            ClassDivision.school_id.in_(school_ids)
+        ).delete(synchronize_session=False)
+
+        cleanup_db.query(User).filter(
+            User.id.in_(teacher_ids)
+        ).delete(synchronize_session=False)
+
+        cleanup_db.query(School).filter(
+            School.id.in_(school_ids)
+        ).delete(synchronize_session=False)
+
+        cleanup_db.commit()
+
+        print(
+            "\nRemoved isolated TEST session-plan environment."
+        )
+
+    except Exception:
+        cleanup_db.rollback()
+        raise
+
+    finally:
+        cleanup_db.close()
+
+
+def create_cross_teacher_content_and_attachment(
+    context,
+    storage: SessionPlanAttachmentStorage,
+):
+    """Create test-only lesson content and a real temporary PDF attachment."""
+    db = SessionLocal()
+    storage_key = None
+
+    try:
+        content = SessionPlanContent(
+            session_plan_item_id=uuid.UUID(context["item_id"]),
+            content="Original test lesson-plan content.",
+            data_origin="TEST",
+        )
+        db.add(content)
+        db.flush()
+
+        storage_key = storage.save(
+            "test-attachment.pdf",
+            "application/pdf",
+            TEST_PDF,
+        )
+
+        attachment = SessionPlanAttachment(
+            session_plan_content_id=content.id,
+            storage_key=storage_key,
+            original_filename="test-attachment.pdf",
+            content_type="application/pdf",
+            file_size_bytes=len(TEST_PDF),
+            data_origin="TEST",
+        )
+        db.add(attachment)
+        db.commit()
+        db.refresh(content)
+        db.refresh(attachment)
+
+        return {
+            "content_id": str(content.id),
+            "attachment_id": str(attachment.id),
+            "storage_key": storage_key,
+        }
+
+    except Exception:
+        db.rollback()
+
+        if storage_key:
+            storage.delete(storage_key)
+
+        raise
+
+    finally:
+        db.close()
+
 
 PARA_TEACHERS = {
-    "PT001": {
-        "email": "pt001@demo.vigyan.com",
-        "school_code": "PVS",
-    },
-    "PT002": {
-        "email": "pt002@demo.vigyan.com",
-        "school_code": "NLS",
-    },
-    "PT003": {
-        "email": "pt003@demo.vigyan.com",
-        "school_code": "SHY",
-    },
-    "PT004": {
-        "email": "pt004@demo.vigyan.com",
-        "school_code": "UECL",
-    },
+    "PT001": {"email": None, "school_code": None},
+    "PT002": {"email": None, "school_code": None},
+    "PT003": {"email": None, "school_code": None},
+    "PT004": {"email": None, "school_code": None},
 }
 
 
-DATA_MANAGER = "dm001@demo.vigyan.com"
+@pytest.fixture
+def temporary_cross_teacher_context():
+    """
+    Create isolated TEST records for cross-teacher authorization tests.
 
+    Creates:
+    - One TEST school and class division.
+    - One TEST para-teacher with a school assignment.
+    - One TEST project-wide Data Manager.
+    - One session-plan week and item.
+
+    All records created here are removed during teardown.
+    """
+    db = SessionLocal()
+
+    suffix = uuid.uuid4().hex[:12]
+
+    teacher_email = f"pt-session-plan-{suffix}@test.vigyan.com"
+    manager_email = f"dm-session-plan-{suffix}@test.vigyan.com"
+
+    teacher_password = f"Test-PT-{uuid.uuid4().hex}-Password"
+    manager_password = f"Test-DM-{uuid.uuid4().hex}-Password"
+
+    week_start = date(2026, 9, 21)
+    week_end = date(2026, 9, 27)
+
+    try:
+        teacher_role = (
+            db.query(Role)
+            .filter(Role.code == "PARA_TEACHER")
+            .first()
+        )
+        manager_role = (
+            db.query(Role)
+            .filter(Role.code == "DATA_MANAGER")
+            .first()
+        )
+
+        assert teacher_role is not None, "PARA_TEACHER role must be seeded."
+        assert manager_role is not None, "DATA_MANAGER role must be seeded."
+
+        school = School(
+            school_code=f"TST-{suffix}",
+            school_name=f"Session Plan Test School {suffix}",
+            status="ACTIVE",
+            data_origin="TEST",
+        )
+        db.add(school)
+        db.flush()
+
+        division = ClassDivision(
+            school_id=school.id,
+            class_level=5,
+            division="A",
+            status="ACTIVE",
+            data_origin="TEST",
+        )
+        db.add(division)
+
+        teacher = User(
+            user_code=f"PT-TEST-{suffix}",
+            account_category="PARA_TEACHER",
+            full_name="Session Plan Test Teacher",
+            email=teacher_email,
+            password_hash=hash_password(teacher_password),
+            status="ACTIVE",
+            data_origin="TEST",
+        )
+
+        manager = User(
+            user_code=f"DM-TEST-{suffix}",
+            account_category="DATA_MANAGER",
+            full_name="Session Plan Test Data Manager",
+            email=manager_email,
+            password_hash=hash_password(manager_password),
+            status="ACTIVE",
+            data_origin="TEST",
+        )
+
+        db.add_all([teacher, manager])
+        db.flush()
+
+        db.add_all([
+            UserRole(
+                user_id=teacher.id,
+                role_id=teacher_role.id,
+                is_active=True,
+            ),
+            UserRole(
+                user_id=manager.id,
+                role_id=manager_role.id,
+                is_active=True,
+            ),
+            UserAssignment(
+                user_id=teacher.id,
+                scope_type="SCHOOL",
+                school_id=school.id,
+                start_date=week_start,
+                end_date=None,
+                is_active=True,
+            ),
+        ])
+
+        week = SessionPlanWeek(
+            para_teacher_id=teacher.id,
+            week_start_date=week_start,
+            week_end_date=week_end,
+            data_origin="TEST",
+        )
+        db.add(week)
+        db.flush()
+
+        item = SessionPlanItem(
+            session_plan_week_id=week.id,
+            class_division_id=division.id,
+            planned_date=week_start,
+            sequence_no=1,
+            data_origin="TEST",
+        )
+        db.add(item)
+
+        db.commit()
+
+        context = {
+            "teacher_email": teacher_email,
+            "teacher_password": teacher_password,
+            "teacher_id": str(teacher.id),
+            "manager_email": manager_email,
+            "manager_password": manager_password,
+            "manager_id": str(manager.id),
+            "week_id": str(week.id),
+            "item_id": str(item.id),
+            "week_start": week_start.isoformat(),
+        }
+
+    except Exception:
+        db.rollback()
+        raise
+
+    finally:
+        db.close()
+
+    try:
+        yield context
+
+    finally:
+        cleanup_db = SessionLocal()
+
+
+        try:
+            cleanup_db.query(SessionPlanAttachment).filter(
+                SessionPlanAttachment.session_plan_content_id.in_(
+                    cleanup_db.query(SessionPlanContent.id).filter(
+                        SessionPlanContent.session_plan_item_id
+                        == uuid.UUID(context["item_id"])
+                    )
+                )
+            ).delete(synchronize_session=False)
+            # Remove dependent planning records first.
+            cleanup_db.query(SessionPlanContent).filter(
+                SessionPlanContent.session_plan_item_id == uuid.UUID(context["item_id"])
+            ).delete(synchronize_session=False)
+
+            cleanup_db.query(SessionPlanItem).filter(
+                SessionPlanItem.id == uuid.UUID(context["item_id"])
+            ).delete(synchronize_session=False)
+
+            cleanup_db.query(SessionPlanWeek).filter(
+                SessionPlanWeek.id == uuid.UUID(context["week_id"])
+            ).delete(synchronize_session=False)
+
+            # Deleting users also cascades their role assignments,
+            # school assignments, and authentication sessions.
+            cleanup_db.query(User).filter(
+                User.id.in_([
+                    uuid.UUID(context["teacher_id"]),
+                    uuid.UUID(context["manager_id"]),
+                ])
+            ).delete(synchronize_session=False)
+
+            school = (
+                cleanup_db.query(School)
+                .filter(School.school_code == f"TST-{suffix}")
+                .first()
+            )
+
+            if school is not None:
+                cleanup_db.query(ClassDivision).filter(
+                    ClassDivision.school_id == school.id
+                ).delete(synchronize_session=False)
+
+                cleanup_db.delete(school)
+
+            cleanup_db.commit()
+
+        except Exception:
+            cleanup_db.rollback()
+            raise
+
+        finally:
+            cleanup_db.close()
 
 def _cleanup_session_plan_state():
     db = SessionLocal()
@@ -62,10 +469,8 @@ def _cleanup_session_plan_state():
             for config in PARA_TEACHERS.values()
         ]
 
-        para_teacher_ids = (
-            db.query(User.id)
-            .filter(User.email.in_(para_teacher_emails))
-            .subquery()
+        para_teacher_ids = select(User.id).where(
+            User.email.in_(para_teacher_emails)
         )
 
         weeks = (
@@ -78,10 +483,10 @@ def _cleanup_session_plan_state():
             .all()
         )
 
-        if not weeks:
-            return
-
         week_ids = [week.id for week in weeks]
+
+        if not week_ids:
+            return
 
         items = (
             db.query(SessionPlanItem)
@@ -106,14 +511,26 @@ def _cleanup_session_plan_state():
                 .all()
             )
 
-            for content in contents:
-                db.delete(content)
+            content_ids = [content.id for content in contents]
 
-        for item in items:
-            db.delete(item)
+            if content_ids:
+                db.query(SessionPlanAttachment).filter(
+                    SessionPlanAttachment.session_plan_content_id.in_(
+                        content_ids
+                    )
+                ).delete(synchronize_session=False)
 
-        for week in weeks:
-            db.delete(week)
+                db.query(SessionPlanContent).filter(
+                    SessionPlanContent.id.in_(content_ids)
+                ).delete(synchronize_session=False)
+
+            db.query(SessionPlanItem).filter(
+                SessionPlanItem.id.in_(item_ids)
+            ).delete(synchronize_session=False)
+
+        db.query(SessionPlanWeek).filter(
+            SessionPlanWeek.id.in_(week_ids)
+        ).delete(synchronize_session=False)
 
         db.commit()
 
@@ -144,6 +561,20 @@ def login(email: str) -> str:
         json={
             "email": email,
             "password": DEMO_PASSWORD,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+
+    return response.json()["session_token"]
+
+
+def login_with_password(email: str, password: str) -> str:
+    response = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": email,
+            "password": password,
         },
     )
 
@@ -1497,3 +1928,284 @@ def test_para_teacher_cannot_validate_item_from_another_school():
     assert response.json()["detail"] == (
         "You are not authorized to access this school."
     )
+
+
+def test_data_manager_can_view_another_teachers_week(
+    temporary_cross_teacher_context,
+):
+    context = temporary_cross_teacher_context
+
+    manager_token = login_with_password(
+        context["manager_email"],
+        context["manager_password"],
+    )
+
+    response = client.get(
+        f"/api/v1/session-plans/weeks/{context['week_start']}",
+        headers=auth_headers(manager_token),
+        params={
+            "para_teacher_id": context["teacher_id"],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["week"]["id"] == context["week_id"]
+    assert isinstance(response.json()["items"], list)
+
+
+def test_data_manager_cannot_update_another_teachers_item(
+    temporary_cross_teacher_context,
+):
+    context = temporary_cross_teacher_context
+
+    manager_token = login_with_password(
+        context["manager_email"],
+        context["manager_password"],
+    )
+
+    response = client.patch(
+        f"/api/v1/session-plans/items/{context['item_id']}",
+        headers=auth_headers(manager_token),
+        json={
+            "planned_date": context["week_start"],
+        },
+    )
+
+    assert response.status_code == 403, response.text
+    assert (
+        response.json()["detail"]
+        == "You cannot modify another para-teacher's plan."
+    )
+
+
+def test_data_manager_can_read_other_teachers_content_and_attachments(
+    temporary_cross_teacher_context,
+    tmp_path,
+    monkeypatch,
+):
+    context = temporary_cross_teacher_context
+    storage = SessionPlanAttachmentStorage(root=tmp_path)
+
+    records = create_cross_teacher_content_and_attachment(
+        context,
+        storage,
+    )
+
+    monkeypatch.setattr(
+        session_plan_router,
+        "_attachment_storage",
+        lambda: storage,
+    )
+
+    manager_token = login_with_password(
+        context["manager_email"],
+        context["manager_password"],
+    )
+    headers = auth_headers(manager_token)
+    item_id = context["item_id"]
+
+    content_response = client.get(
+        f"/api/v1/session-plans/items/{item_id}/content",
+        headers=headers,
+    )
+
+    assert content_response.status_code == 200, content_response.text
+    assert content_response.json()["content"] == (
+        "Original test lesson-plan content."
+    )
+
+    list_response = client.get(
+        f"/api/v1/session-plans/items/{item_id}/attachments",
+        headers=headers,
+    )
+
+    assert list_response.status_code == 200, list_response.text
+    assert len(list_response.json()) == 1
+    assert list_response.json()[0]["id"] == records["attachment_id"]
+
+    download_response = client.get(
+        f"/api/v1/session-plans/items/{item_id}/attachments/"
+        f"{records['attachment_id']}",
+        headers=headers,
+    )
+
+    assert download_response.status_code == 200
+    assert download_response.content == TEST_PDF
+    assert download_response.headers["content-type"].startswith(
+        "application/pdf"
+    )
+
+
+def test_data_manager_cannot_update_other_teachers_content(
+    temporary_cross_teacher_context,
+    tmp_path,
+):
+    context = temporary_cross_teacher_context
+    storage = SessionPlanAttachmentStorage(root=tmp_path)
+
+    create_cross_teacher_content_and_attachment(context, storage)
+
+    manager_token = login_with_password(
+        context["manager_email"],
+        context["manager_password"],
+    )
+
+    response = client.put(
+        f"/api/v1/session-plans/items/{context['item_id']}/content",
+        headers=auth_headers(manager_token),
+        json={"content": "Unauthorized replacement content."},
+    )
+
+    assert response.status_code == 403, response.text
+
+    db = SessionLocal()
+    try:
+        content = (
+            db.query(SessionPlanContent)
+            .filter(
+                SessionPlanContent.session_plan_item_id
+                == uuid.UUID(context["item_id"])
+            )
+            .one()
+        )
+
+        assert content.content == "Original test lesson-plan content."
+    finally:
+        db.close()
+
+
+def test_data_manager_cannot_upload_attachment_to_other_teachers_plan(
+    temporary_cross_teacher_context,
+    tmp_path,
+    monkeypatch,
+):
+    context = temporary_cross_teacher_context
+    storage = SessionPlanAttachmentStorage(root=tmp_path)
+
+    records = create_cross_teacher_content_and_attachment(
+        context,
+        storage,
+    )
+
+    monkeypatch.setattr(
+        session_plan_router,
+        "_attachment_storage",
+        lambda: storage,
+    )
+
+    manager_token = login_with_password(
+        context["manager_email"],
+        context["manager_password"],
+    )
+
+    response = client.post(
+        f"/api/v1/session-plans/items/{context['item_id']}/attachments",
+        headers=auth_headers(manager_token),
+        files={
+            "attachment": (
+                "unauthorized.pdf",
+                TEST_PDF,
+                "application/pdf",
+            )
+        },
+    )
+
+    assert response.status_code == 403, response.text
+
+    # The original attachment remains the only attachment.
+    db = SessionLocal()
+    try:
+        attachments = (
+            db.query(SessionPlanAttachment)
+            .filter(
+                SessionPlanAttachment.session_plan_content_id
+                == uuid.UUID(records["content_id"])
+            )
+            .all()
+        )
+
+        assert len(attachments) == 1
+        assert attachments[0].id == uuid.UUID(records["attachment_id"])
+    finally:
+        db.close()
+
+    # The attempted upload must not create another physical file.
+    assert len(list(Path(tmp_path).iterdir())) == 1
+
+
+def test_data_manager_cannot_delete_other_teachers_attachment(
+    temporary_cross_teacher_context,
+    tmp_path,
+    monkeypatch,
+):
+    context = temporary_cross_teacher_context
+    storage = SessionPlanAttachmentStorage(root=tmp_path)
+
+    records = create_cross_teacher_content_and_attachment(
+        context,
+        storage,
+    )
+
+    monkeypatch.setattr(
+        session_plan_router,
+        "_attachment_storage",
+        lambda: storage,
+    )
+
+    manager_token = login_with_password(
+        context["manager_email"],
+        context["manager_password"],
+    )
+
+    response = client.delete(
+        f"/api/v1/session-plans/items/{context['item_id']}/attachments/"
+        f"{records['attachment_id']}",
+        headers=auth_headers(manager_token),
+    )
+
+    assert response.status_code == 403, response.text
+
+    db = SessionLocal()
+    try:
+        attachment = (
+            db.query(SessionPlanAttachment)
+            .filter(
+                SessionPlanAttachment.id
+                == uuid.UUID(records["attachment_id"])
+            )
+            .first()
+        )
+
+        assert attachment is not None
+        assert attachment.storage_key == records["storage_key"]
+    finally:
+        db.close()
+
+    assert storage.open(records["storage_key"]).read() == TEST_PDF
+
+
+def test_data_manager_cannot_validate_or_link_other_teachers_item(
+    temporary_cross_teacher_context,
+):
+    context = temporary_cross_teacher_context
+
+    manager_token = login_with_password(
+        context["manager_email"],
+        context["manager_password"],
+    )
+    headers = auth_headers(manager_token)
+    item_id = context["item_id"]
+
+    validate_response = client.post(
+        f"/api/v1/session-plans/items/{item_id}/validate",
+        headers=headers,
+    )
+
+    assert validate_response.status_code == 403, validate_response.text
+
+    link_response = client.post(
+        f"/api/v1/session-plans/items/{item_id}/teaching-session",
+        headers=headers,
+    )
+
+    assert link_response.status_code == 403, link_response.text

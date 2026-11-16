@@ -69,3 +69,9 @@ class SessionPlanContent(Base):
         "SessionPlanItem",
         back_populates="content",
     )
+
+    attachments = relationship(
+        "SessionPlanAttachment",
+        back_populates="session_plan_content",
+        cascade="all, delete-orphan",
+    )

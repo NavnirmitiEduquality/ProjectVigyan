@@ -17,6 +17,7 @@ from app.models.session_plan_item import SessionPlanItem
 from app.models.session_plan_content import SessionPlanContent
 from app.models.academic_year import AcademicYear
 from app.models.academic_holiday import AcademicHoliday
+from app.models.session_plan_attachment import SessionPlanAttachment
 from app.models.assessment import (
     Assessment,
     AssessmentImport,
@@ -74,4 +75,5 @@ __all__ = [
     "ObservationReportCorrection",
     "PendingReportNotification",
     "PlanningNotification",
+    "SessionPlanAttachment",
 ]

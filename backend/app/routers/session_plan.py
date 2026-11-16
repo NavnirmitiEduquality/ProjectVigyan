@@ -2,8 +2,21 @@ from __future__ import annotations
 
 from datetime import date, datetime, time
 from uuid import UUID
+import re
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import logging
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    UploadFile,
+    status,
+)
+from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
+from pathlib import Path
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -16,16 +29,21 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import (
     get_authorized_school_ids,
+    get_user_permission_codes,
     require_permission,
     require_school_access,
 )
 from app.models import (
     ClassDivision,
+    Role,
+    UserAssignment,
+    UserRole,
     SessionPlanContent,
     SessionPlanItem,
     SessionPlanWeek,
     TeachingSession,
     User,
+    SessionPlanAttachment,
 )
 from app.services.session_plan.service import (
     DuplicatePlanningItemError,
@@ -42,13 +60,18 @@ from app.services.session_plan.service import (
     SessionPlanService,
     SessionPlanWeekNotFoundError,
 )
+from app.services.session_plan.attachment_storage import (
+    AttachmentValidationError,
+    MAX_ATTACHMENT_SIZE_BYTES,
+    SessionPlanAttachmentStorage,
+)
 
 
 router = APIRouter(
     prefix="/api/v1/session-plans",
     tags=["Session Plans"],
 )
-
+logger = logging.getLogger(__name__)
 
 # ----------------------------------------------------------------------
 # RESPONSE MODELS
@@ -88,6 +111,19 @@ class SessionPlanContentResponse(BaseModel):
     id: UUID
     session_plan_item_id: UUID
     content: str
+    data_origin: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class SessionPlanAttachmentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    session_plan_content_id: UUID
+    original_filename: str
+    content_type: str
+    file_size_bytes: int
     data_origin: str
     created_at: datetime
     updated_at: datetime
@@ -215,6 +251,66 @@ def _service() -> SessionPlanService:
     return SessionPlanService()
 
 
+def _attachment_storage() -> SessionPlanAttachmentStorage:
+    return SessionPlanAttachmentStorage()
+
+
+def _attachment_content_disposition(filename: str) -> str:
+    suffix = Path(filename).suffix.lower()
+
+    ascii_stem = Path(filename).stem.encode(
+        "ascii",
+        errors="ignore",
+    ).decode("ascii")
+
+    ascii_stem = re.sub(
+        r"[^A-Za-z0-9._ -]",
+        "_",
+        ascii_stem,
+    ).strip(" .")
+
+    if not ascii_stem:
+        ascii_stem = "attachment"
+
+    ascii_filename = f"{ascii_stem}{suffix}"
+
+    encoded_filename = quote(filename, safe="")
+
+    return (
+        f'attachment; filename="{ascii_filename}"; '
+        f"filename*=UTF-8''{encoded_filename}"
+    )
+
+def _read_attachment_upload(upload: UploadFile) -> bytes:
+    chunks: list[bytes] = []
+    total_size = 0
+
+    try:
+        while True:
+            chunk = upload.file.read(64 * 1024)
+
+            if not chunk:
+                break
+
+            total_size += len(chunk)
+
+            if total_size > MAX_ATTACHMENT_SIZE_BYTES:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail="Attachment exceeds the 5 MiB limit.",
+                )
+
+            chunks.append(chunk)
+
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unable to read attachment.",
+        ) from exc
+
+    return b"".join(chunks)
+
+
 def _raise_service_http_error(
     exc: Exception,
 ) -> None:
@@ -322,6 +418,150 @@ def _get_item_with_school_scope(
     return item
 
 
+def _authorize_teacher_plan_view(
+    *,
+    requested_teacher_id: UUID,
+    current_user: User,
+    db: Session,
+) -> User:
+    """
+    Authorize viewing a Para-Teacher's planning week.
+
+    Own plans require session_plan.view.
+    Other teachers' plans require session_plan.view_all.
+    """
+
+    target_teacher = (
+        db.query(User)
+        .join(UserRole, UserRole.user_id == User.id)
+        .join(Role, Role.id == UserRole.role_id)
+        .filter(
+            User.id == requested_teacher_id,
+            User.account_category == "PARA_TEACHER",
+            User.status == "ACTIVE",
+            UserRole.is_active.is_(True),
+            Role.code == "PARA_TEACHER",
+        )
+        .first()
+    )
+
+    if target_teacher is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Active Para-Teacher not found.",
+        )
+
+    if requested_teacher_id != current_user.id:
+        permissions = get_user_permission_codes(
+            current_user,
+            db,
+        )
+
+        if "session_plan.view_all" not in permissions:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not authorized to view another Para-Teacher's plan.",
+            )
+
+    return target_teacher
+
+
+def _authorize_teacher_week_school_scope(
+    *,
+    teacher_id: UUID,
+    week_start_date: date,
+    week_end_date: date,
+    authorized_school_ids: set | None,
+    db: Session,
+) -> None:
+    """
+    Ensure a school-scoped viewer can access the target
+    teacher's planning week through an overlapping assignment.
+    """
+
+    if authorized_school_ids is None:
+        return
+
+    if not authorized_school_ids:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Planning week not found.",
+        )
+
+    assignment = (
+        db.query(UserAssignment.id)
+        .filter(
+            UserAssignment.user_id == teacher_id,
+            UserAssignment.is_active.is_(True),
+            UserAssignment.start_date <= week_end_date,
+            (
+                UserAssignment.end_date.is_(None)
+                | (UserAssignment.end_date >= week_start_date)
+            ),
+            (
+                (UserAssignment.scope_type == "PROJECT")
+                | (
+                    (UserAssignment.scope_type == "SCHOOL")
+                    & UserAssignment.school_id.in_(authorized_school_ids)
+                )
+            ),
+        )
+        .first()
+    )
+
+    if assignment is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Planning week not found.",
+        )
+
+
+def _get_item_owner_id(item: SessionPlanItem) -> UUID:
+    return item.session_plan_week.para_teacher_id
+
+
+def _get_item_for_authorized_view(
+    *,
+    item_id: UUID,
+    current_user: User,
+    db: Session,
+) -> tuple[SessionPlanItem, UUID]:
+    """
+    Retrieve an item after checking school scope, plan ownership
+    visibility, and teacher assignment scope.
+    """
+
+    item = _get_item_with_school_scope(
+        item_id=item_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    owner_id = _get_item_owner_id(item)
+    week = item.session_plan_week
+
+    _authorize_teacher_plan_view(
+        requested_teacher_id=owner_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    authorized_school_ids = get_authorized_school_ids(
+        current_user,
+        db,
+    )
+
+    _authorize_teacher_week_school_scope(
+        teacher_id=owner_id,
+        week_start_date=week.week_start_date,
+        week_end_date=week.week_end_date,
+        authorized_school_ids=authorized_school_ids,
+        db=db,
+    )
+
+    return item, owner_id
+
+
 def _get_week_for_current_user(
     *,
     week_start_date: date,
@@ -330,8 +570,6 @@ def _get_week_for_current_user(
 ) -> SessionPlanWeek:
     """
     Retrieve the authenticated user's own planning week.
-
-    Planning ownership is deliberately not client-controlled.
     """
 
     service = _service()
@@ -367,40 +605,64 @@ def _commit_or_conflict(
 # ----------------------------------------------------------------------
 
 
+
 @router.get(
     "/weeks/{week_start_date}",
     response_model=SessionPlanWeekDetailResponse,
 )
 def get_session_plan_week(
     week_start_date: date,
+    para_teacher_id: UUID | None = None,
     current_user: User = Depends(
         require_permission("session_plan.view")
     ),
     db: Session = Depends(get_db),
 ):
     """
-    Get the authenticated para-teacher's planning week.
+    Get the requested Para-Teacher's planning week.
 
-    Only the authenticated user's planning scope is exposed.
+    Cross-teacher visibility requires session_plan.view_all.
+    Returned items are restricted to the user's authorized schools.
     """
 
-    week = _get_week_for_current_user(
-        week_start_date=week_start_date,
+    requested_teacher_id = para_teacher_id or current_user.id
+
+    _authorize_teacher_plan_view(
+        requested_teacher_id=requested_teacher_id,
         current_user=current_user,
         db=db,
     )
+
+    service = _service()
+
+    try:
+        week = service.get_week(
+            db,
+            para_teacher_id=requested_teacher_id,
+            week_start_date=week_start_date,
+        )
+    except Exception as exc:
+        _raise_service_http_error(exc)
+        raise
 
     authorized_school_ids = get_authorized_school_ids(
         current_user,
         db,
     )
 
+    _authorize_teacher_week_school_scope(
+        teacher_id=requested_teacher_id,
+        week_start_date=week.week_start_date,
+        week_end_date=week.week_end_date,
+        authorized_school_ids=authorized_school_ids,
+        db=db,
+    )
+
     items_query = (
         db.query(SessionPlanItem)
         .join(
             ClassDivision,
-            SessionPlanItem.class_division_id
-            == ClassDivision.id,
+            SessionPlanItem.class_division_id == ClassDivision.id,
         )
         .filter(
             SessionPlanItem.session_plan_week_id == week.id,
@@ -413,11 +675,7 @@ def get_session_plan_week(
         else:
             items = (
                 items_query
-                .filter(
-                    ClassDivision.school_id.in_(
-                        authorized_school_ids
-                    )
-                )
+                .filter(ClassDivision.school_id.in_(authorized_school_ids))
                 .order_by(
                     SessionPlanItem.planned_date,
                     SessionPlanItem.sequence_no,
@@ -621,6 +879,337 @@ def update_session_plan_item(
     return updated_item
 
 
+@router.post(
+    "/items/{item_id}/attachments",
+    response_model=SessionPlanAttachmentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def upload_session_plan_attachment(
+    item_id: UUID,
+    attachment: UploadFile = File(...),
+    current_user: User = Depends(
+        require_permission("session_plan.update")
+    ),
+    db: Session = Depends(get_db),
+):
+    item = _get_item_with_school_scope(
+        item_id=item_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    service = _service()
+
+    try:
+        service.ensure_item_editable(
+            db,
+            para_teacher_id=current_user.id,
+            item_id=item.id,
+        )
+        content = service.get_content(
+            db,
+            para_teacher_id=current_user.id,
+            item_id=item.id,
+        )
+    except Exception as exc:
+        _raise_service_http_error(exc)
+        raise
+
+    if not attachment.filename:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A filename is required.",
+        )
+
+    if len(attachment.filename) > 255:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Filename must not exceed 255 characters.",
+        )
+
+    data = _read_attachment_upload(attachment)
+    storage = _attachment_storage()
+
+    try:
+        _, validated_content_type = storage.validate(
+            attachment.filename,
+            attachment.content_type or "",
+            data,
+        )
+    except AttachmentValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+    try:
+        storage_key = storage.save(
+            attachment.filename,
+            validated_content_type,
+            data,
+        )
+    except AttachmentValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+    record = SessionPlanAttachment(
+        session_plan_content_id=content.id,
+        storage_key=storage_key,
+        original_filename=Path(attachment.filename).name,
+        content_type=validated_content_type,
+        file_size_bytes=len(data),
+        data_origin="PRODUCTION",
+    )
+
+    try:
+        db.add(record)
+        db.flush()
+        db.refresh(record)
+
+    except Exception:
+        db.rollback()
+
+        try:
+            storage.delete(storage_key)
+        except OSError:
+            # Preserve the original database exception.
+            # An orphaned file may require reconciliation.
+            pass
+
+        raise
+
+    try:
+        db.commit()
+
+    except Exception as exc:
+        db.rollback()
+
+        try:
+            storage.delete(storage_key)
+        except OSError:
+            # Preserve the original commit exception.
+            # An orphaned file may require reconciliation.
+            pass
+
+        if isinstance(exc, IntegrityError):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Unable to save session-plan attachment.",
+            ) from exc
+
+        raise
+
+    return record
+
+
+@router.get(
+    "/items/{item_id}/attachments",
+    response_model=list[SessionPlanAttachmentResponse],
+)
+def list_session_plan_attachments(
+    item_id: UUID,
+    current_user: User = Depends(
+        require_permission("session_plan.view")
+    ),
+    db: Session = Depends(get_db),
+):
+    item, owner_id = _get_item_for_authorized_view(
+        item_id=item_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    service = _service()
+
+    try:
+        content = service.get_content(
+            db,
+            para_teacher_id=owner_id,
+            item_id=item.id,
+        )
+    except Exception as exc:
+        _raise_service_http_error(exc)
+        raise
+
+    return (
+        db.query(SessionPlanAttachment)
+        .filter(
+            SessionPlanAttachment.session_plan_content_id == content.id,
+        )
+        .order_by(SessionPlanAttachment.created_at.asc())
+        .all()
+    )
+
+
+@router.get(
+    "/items/{item_id}/attachments/{attachment_id}",
+)
+def download_session_plan_attachment(
+    item_id: UUID,
+    attachment_id: UUID,
+    current_user: User = Depends(
+        require_permission("session_plan.view")
+    ),
+    db: Session = Depends(get_db),
+):
+    item, owner_id = _get_item_for_authorized_view(
+        item_id=item_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    service = _service()
+
+    try:
+        content = service.get_content(
+            db,
+            para_teacher_id=owner_id,
+            item_id=item.id,
+        )
+    except Exception as exc:
+        _raise_service_http_error(exc)
+        raise
+
+    attachment = (
+        db.query(SessionPlanAttachment)
+        .filter(
+            SessionPlanAttachment.id == attachment_id,
+            SessionPlanAttachment.session_plan_content_id
+            == content.id,
+        )
+        .first()
+    )
+
+    if attachment is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session-plan attachment not found.",
+        )
+
+    storage = _attachment_storage()
+
+    try:
+        file_handle = storage.open(attachment.storage_key)
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Attachment file is unavailable.",
+        ) from exc
+    except OSError as exc:
+        logger.exception(
+            "Unable to open session-plan attachment."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to retrieve attachment.",
+        ) from exc
+
+    def file_iterator():
+        try:
+            while True:
+                chunk = file_handle.read(64 * 1024)
+
+                if not chunk:
+                    break
+
+                yield chunk
+        finally:
+            file_handle.close()
+
+    return StreamingResponse(
+        file_iterator(),
+        media_type=attachment.content_type,
+        headers={
+            "Content-Disposition": _attachment_content_disposition(
+                attachment.original_filename
+            ),
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.delete(
+    "/items/{item_id}/attachments/{attachment_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_session_plan_attachment(
+    item_id: UUID,
+    attachment_id: UUID,
+    current_user: User = Depends(
+        require_permission("session_plan.update")
+    ),
+    db: Session = Depends(get_db),
+):
+    item = _get_item_with_school_scope(
+        item_id=item_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    service = _service()
+
+    try:
+        service.ensure_item_editable(
+            db,
+            para_teacher_id=current_user.id,
+            item_id=item.id,
+        )
+
+        content = service.get_content(
+            db,
+            para_teacher_id=current_user.id,
+            item_id=item.id,
+        )
+    except Exception as exc:
+        _raise_service_http_error(exc)
+        raise
+
+    attachment = (
+        db.query(SessionPlanAttachment)
+        .filter(
+            SessionPlanAttachment.id == attachment_id,
+            SessionPlanAttachment.session_plan_content_id
+            == content.id,
+        )
+        .first()
+    )
+
+    if attachment is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session-plan attachment not found.",
+        )
+
+    storage_key = attachment.storage_key
+
+    db.delete(attachment)
+
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Unable to delete session-plan attachment.",
+        ) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+    try:
+        _attachment_storage().delete(storage_key)
+    except OSError:
+        logger.exception(
+            "Unable to delete physical session-plan attachment "
+            "after database deletion. Storage key: %s",
+            storage_key,
+        )
+
+    return None
+
+
 @router.delete(
     "/items/{item_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -634,6 +1223,9 @@ def delete_session_plan_item(
 ):
     """
     Delete an editable session planning item.
+
+    Physical attachment files are deleted only after
+    the database transaction succeeds.
     """
 
     item = _get_item_with_school_scope(
@@ -641,6 +1233,23 @@ def delete_session_plan_item(
         current_user=current_user,
         db=db,
     )
+
+    # Capture physical storage keys before deleting
+    # the lesson-plan content and attachment records.
+    attachment_keys = (
+        db.query(SessionPlanAttachment.storage_key)
+        .join(
+            SessionPlanContent,
+            SessionPlanAttachment.session_plan_content_id
+            == SessionPlanContent.id,
+        )
+        .filter(
+            SessionPlanContent.session_plan_item_id == item.id,
+        )
+        .all()
+    )
+
+    storage_keys = [row[0] for row in attachment_keys]
 
     service = _service()
 
@@ -654,10 +1263,25 @@ def delete_session_plan_item(
         _raise_service_http_error(exc)
         raise
 
+    # This commits the database deletion.
+    # If it fails, the exception prevents physical cleanup.
     _commit_or_conflict(
         db,
         "Unable to delete session planning item.",
     )
+
+    # Delete physical files only after successful commit.
+    storage = _attachment_storage()
+
+    for storage_key in storage_keys:
+        try:
+            storage.delete(storage_key)
+        except OSError:
+            logger.exception(
+                "Unable to delete session-plan attachment file "
+                "after item deletion. Storage key: %s",
+                storage_key,
+            )
 
     return None
 
@@ -682,7 +1306,7 @@ def get_session_plan_content(
     Get lesson-plan content for a planning item.
     """
 
-    _get_item_with_school_scope(
+    item, owner_id = _get_item_for_authorized_view(
         item_id=item_id,
         current_user=current_user,
         db=db,
@@ -693,8 +1317,8 @@ def get_session_plan_content(
     try:
         content = service.get_content(
             db,
-            para_teacher_id=current_user.id,
-            item_id=item_id,
+            para_teacher_id=owner_id,
+            item_id=item.id,
         )
     except Exception as exc:
         _raise_service_http_error(exc)
@@ -772,7 +1396,7 @@ def validate_session_plan_item(
     The service performs the actual readiness rules.
     """
 
-    _get_item_with_school_scope(
+    _get_item_for_authorized_view(
         item_id=item_id,
         current_user=current_user,
         db=db,
