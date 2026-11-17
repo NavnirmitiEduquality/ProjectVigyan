@@ -40,7 +40,7 @@ def planning_notification_fixture():
             school_code=f"PN-{suffix}",
             school_name=f"Planning Notification School {suffix}",
             status="ACTIVE",
-            data_origin="TEST",
+            data_origin="PRODUCTION",
         )
         db.add(school)
         db.flush()
@@ -56,11 +56,12 @@ def planning_notification_fixture():
 
         teacher = User(
             user_code=f"PN-T-{suffix}",
+            account_category="PARA_TEACHER",
             full_name="Planning Test Teacher",
             email=f"pn-teacher-{suffix}@example.com",
             password_hash="test-only-not-a-real-password",
             status="ACTIVE",
-            data_origin="TEST",
+            data_origin="PRODUCTION",
         )
         db.add(teacher)
 
@@ -70,11 +71,12 @@ def planning_notification_fixture():
         ):
             recipient = User(
                 user_code=f"PN-{label[:2].upper()}-{suffix}",
+                account_category=role_code,
                 full_name=f"Planning Test {label}",
                 email=f"pn-{label.lower().replace(' ', '-')}-{suffix}@example.com",
                 password_hash="test-only-not-a-real-password",
                 status="ACTIVE",
-                data_origin="TEST",
+                data_origin="PRODUCTION",
             )
             db.add(recipient)
             recipients.append((recipient, role_code))
@@ -122,6 +124,7 @@ def planning_notification_fixture():
 
         yield {
             "db": db,
+            "school": school,
             "teacher": teacher,
             "recipients": [recipient for recipient, _ in recipients],
             "extra_teachers": extra_teachers,
@@ -286,6 +289,88 @@ def test_weekly_shortfall_notifies_management_and_coordinator(
     )
     assert len(fixture_notifications) >= len(expected_recipient_ids)
 
+
+def test_test_origin_teacher_is_excluded_from_weekly_notifications(
+    planning_notification_fixture,
+):
+    fixture = planning_notification_fixture
+    db = fixture["db"]
+    service = PlanningNotificationService()
+
+    fixture["teacher"].data_origin = "TEST"
+    _add_planned_items(db, fixture, 3)
+
+    service.generate_weekly_noncompliance(
+        db,
+        week_start_date=fixture["week_start"],
+    )
+    db.flush()
+
+    notifications = db.query(PlanningNotification).filter(
+        PlanningNotification.para_teacher_id == fixture["teacher"].id,
+        PlanningNotification.week_start_date == fixture["week_start"],
+        PlanningNotification.notification_type == service.WEEKLY_NONCOMPLIANCE,
+    ).all()
+
+    assert notifications == []
+
+
+def test_teacher_assigned_to_test_origin_school_is_excluded(
+    planning_notification_fixture,
+):
+    fixture = planning_notification_fixture
+    db = fixture["db"]
+    service = PlanningNotificationService()
+
+    fixture["school"].data_origin = "TEST"
+    _add_planned_items(db, fixture, 3)
+
+    service.generate_weekly_noncompliance(
+        db,
+        week_start_date=fixture["week_start"],
+    )
+    db.flush()
+
+    notifications = db.query(PlanningNotification).filter(
+        PlanningNotification.para_teacher_id == fixture["teacher"].id,
+        PlanningNotification.week_start_date == fixture["week_start"],
+        PlanningNotification.notification_type == service.WEEKLY_NONCOMPLIANCE,
+    ).all()
+
+    assert notifications == []
+
+
+def test_test_origin_management_recipient_is_excluded(
+    planning_notification_fixture,
+):
+    fixture = planning_notification_fixture
+    db = fixture["db"]
+    service = PlanningNotificationService()
+
+    excluded_recipient = fixture["recipients"][0]
+    allowed_recipient = fixture["recipients"][1]
+    excluded_recipient.data_origin = "TEST"
+
+    _add_planned_items(db, fixture, 3)
+
+    service.generate_weekly_noncompliance(
+        db,
+        week_start_date=fixture["week_start"],
+    )
+    db.flush()
+
+    notifications = db.query(PlanningNotification).filter(
+        PlanningNotification.para_teacher_id == fixture["teacher"].id,
+        PlanningNotification.week_start_date == fixture["week_start"],
+        PlanningNotification.notification_type == service.WEEKLY_NONCOMPLIANCE,
+    ).all()
+
+    recipient_ids = {
+        notification.recipient_id for notification in notifications
+    }
+
+    assert allowed_recipient.id in recipient_ids
+    assert excluded_recipient.id not in recipient_ids
 
 
 def test_weekly_shortfall_rerun_does_not_duplicate_notifications(
@@ -517,7 +602,7 @@ def test_weekly_notifications_resolve_when_no_teachers_remain_eligible(
     db.query(User).filter(
         User.id == fixture["teacher"].id
     ).update(
-        {User.status: "INACTIVE"},
+        {User.status: "DISABLED"},
         synchronize_session=False,
     )
     db.flush()
@@ -553,7 +638,7 @@ def test_weekly_reconciliation_returns_unique_notification_ids(
     db.query(User).filter(
         User.id == fixture["teacher"].id
     ).update(
-        {User.status: "INACTIVE"},
+        {User.status: "DISABLED"},
         synchronize_session=False,
     )
     db.flush()
@@ -596,11 +681,12 @@ def test_weekly_notifications_resolve_for_ineligible_teacher_while_others_remain
     suffix = uuid4().hex[:10]
     other_teacher = User(
         user_code=f"PN-T2-{suffix}",
+        account_category="PARA_TEACHER",
         full_name="Second Planning Test Teacher",
         email=f"pn-teacher2-{suffix}@example.com",
         password_hash="test-only-not-a-real-password",
         status="ACTIVE",
-        data_origin="TEST",
+        data_origin="PRODUCTION",
     )
     db.add(other_teacher)
     db.flush()

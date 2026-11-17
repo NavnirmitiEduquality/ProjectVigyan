@@ -1,6 +1,53 @@
 <script setup lang="ts">
 import type { AcademicYear } from '../../services/academicCalendar'
 type ThemeMode = 'light' | 'dark' | 'system'
+import { onMounted, onUnmounted, ref } from 'vue'
+import type { PlanningNotification } from '../../services/planningNotifications'
+import PlanningNotificationsPanel from './PlanningNotificationsPanel.vue'
+
+const isPlanningNotificationsOpen = ref(false)
+const notificationWrap = ref<HTMLElement | null>(null)
+
+function openPlanningNotifications() {
+  isPlanningNotificationsOpen.value = true
+  emit('refresh-planning-notifications')
+}
+
+function togglePlanningNotifications() {
+  if (isPlanningNotificationsOpen.value) {
+    isPlanningNotificationsOpen.value = false
+  } else {
+    openPlanningNotifications()
+  }
+}
+
+function handleNotificationOutsideClick(event: PointerEvent) {
+  const target = event.target
+
+  if (
+    isPlanningNotificationsOpen.value &&
+    target instanceof Node &&
+    !notificationWrap.value?.contains(target)
+  ) {
+    isPlanningNotificationsOpen.value = false
+  }
+}
+
+function handleNotificationKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && isPlanningNotificationsOpen.value) {
+    isPlanningNotificationsOpen.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('pointerdown', handleNotificationOutsideClick)
+  document.addEventListener('keydown', handleNotificationKeydown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('pointerdown', handleNotificationOutsideClick)
+  document.removeEventListener('keydown', handleNotificationKeydown)
+})
 
 defineProps<{
   isRailCollapsed: boolean
@@ -8,11 +55,16 @@ defineProps<{
   selectedYear: string
   academicYears: AcademicYear[]
   isLoadingAcademicYears: boolean
+  unreadPlanningNotificationCount: number
   academicYearError: string
   canManageCalendar: boolean
+  canViewPlanningNotifications: boolean
   themeMode: ThemeMode
   displayName: string
   userInitials: string
+  planningNotifications: PlanningNotification[]
+  isLoadingPlanningNotifications: boolean
+  planningNotificationsError: string
 }>()
 
 const emit = defineEmits<{
@@ -22,6 +74,7 @@ const emit = defineEmits<{
   'create-academic-year': []
   'change-theme': [mode: ThemeMode]
   'sign-out': []
+  'refresh-planning-notifications': []
 }>()
 </script>
 
@@ -43,9 +96,31 @@ const emit = defineEmits<{
           <span class="ov-title-long">{{ title || 'Management Overview' }}</span>
         </h1>
       </div>
+      <button class="ov-sign-out" type="button" title="Sign out" aria-label="Sign out" @click="emit('sign-out')">
+        <span class="material-symbols-outlined" aria-hidden="true">logout</span>
+        <span class="ov-sign-out-label">Sign Out</span>
+      </button>
     </div>
 
     <div class="ov-header-right">
+      <div v-if="canViewPlanningNotifications" ref="notificationWrap" class="ov-notification-wrap">
+        <button class="ov-notification-btn" type="button"
+          :aria-label="isPlanningNotificationsOpen ? 'Close planning notifications' : 'Open planning notifications'"
+          title="Planning notifications" :aria-expanded="isPlanningNotificationsOpen" aria-haspopup="true"
+          @click="togglePlanningNotifications">
+          <span class="material-symbols-outlined" aria-hidden="true">
+            notifications
+          </span>
+
+          <span v-if="unreadPlanningNotificationCount > 0" class="ov-notification-count" aria-live="polite">
+            {{ unreadPlanningNotificationCount > 99 ? '99+' : unreadPlanningNotificationCount }}
+          </span>
+        </button>
+
+        <PlanningNotificationsPanel v-if="isPlanningNotificationsOpen" :notifications="planningNotifications"
+          :is-loading="isLoadingPlanningNotifications" :error="planningNotificationsError"
+          @refresh="emit('refresh-planning-notifications')" @close="isPlanningNotificationsOpen = false" />
+      </div>
       <div class="ov-ay-select-wrap">
         <select :value="selectedYear" class="ov-ay-select" aria-label="Academic Year"
           :disabled="isLoadingAcademicYears || academicYears.length === 0"
@@ -68,12 +143,7 @@ const emit = defineEmits<{
         </p>
       </div>
 
-      <button
-        v-if="canManageCalendar"
-        class="ov-create-year-btn"
-        type="button"
-        @click="emit('create-academic-year')"
-      >
+      <button v-if="canManageCalendar" class="ov-create-year-btn" type="button" @click="emit('create-academic-year')">
         <span class="material-symbols-outlined" aria-hidden="true">add</span>
         <span class="ov-create-year-label">Create Year</span>
       </button>
@@ -105,17 +175,6 @@ const emit = defineEmits<{
           <span class="ov-profile-role">Academic Operations</span>
         </div>
       </div>
-
-      <button
-        class="ov-sign-out"
-        type="button"
-        title="Sign out"
-        aria-label="Sign out"
-        @click="emit('sign-out')"
-      >
-        <span class="material-symbols-outlined" aria-hidden="true">logout</span>
-        <span class="ov-sign-out-label">Sign Out</span>
-      </button>
     </div>
   </header>
 </template>
@@ -283,6 +342,28 @@ const emit = defineEmits<{
   font-weight: 700;
 }
 
+.ov-notification-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.ov-notification-wrap :deep(.planning-notifications) {
+  position: absolute;
+  top: calc(100% + 12px);
+  right: 0;
+  z-index: 50;
+}
+
+@media (max-width: 600px) {
+  .ov-notification-wrap :deep(.planning-notifications) {
+    left: 0;
+    right: auto;
+    width: min(390px, calc(100vw - 32px));
+  }
+}
+
 .ov-profile-text {
   display: flex;
   flex-direction: column;
@@ -304,6 +385,41 @@ const emit = defineEmits<{
   color: var(--ov-text-muted);
   font-size: 11px;
   white-space: nowrap;
+}
+
+.ov-notification-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--ov-border);
+  border-radius: 8px;
+  background: var(--ov-bg-surface);
+  color: var(--ov-text-primary);
+  cursor: pointer;
+}
+
+.ov-notification-btn .material-symbols-outlined {
+  font-size: 20px;
+}
+
+.ov-notification-count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 17px;
+  padding: 2px 4px;
+  border-radius: 10px;
+  background: #c62828;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
 }
 
 @media (max-width: 1279px) {
@@ -509,5 +625,4 @@ const emit = defineEmits<{
     padding: 7px;
   }
 }
-
 </style>

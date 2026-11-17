@@ -52,6 +52,15 @@ const routes: RouteRecordRaw[] = [
       },
     },
     {
+      path: '/academic-calendar',
+      name: 'academic-calendar',
+      component: RoutePlaceholder,
+      meta: {
+        requiresAuth: true,
+        section: 'academic-calendar',
+      },
+    },
+    {
       path: '/:pathMatch(.*)*',
       redirect: '/',
     },

@@ -35,6 +35,7 @@ class PlanningNotificationService:
             .join(Role, Role.id == UserRole.role_id)
             .filter(
                 User.status == "ACTIVE",
+                User.data_origin == "PRODUCTION",
                 UserRole.is_active.is_(True),
                 Role.code.in_(
                     PlanningNotificationService.MANAGEMENT_ROLES
@@ -62,6 +63,7 @@ class PlanningNotificationService:
             .join(School, School.id == UserAssignment.school_id)
             .filter(
                 User.status == "ACTIVE",
+                User.data_origin == "PRODUCTION",
                 UserRole.is_active.is_(True),
                 Role.code == "PARA_TEACHER",
                 UserAssignment.scope_type == "SCHOOL",
@@ -72,6 +74,7 @@ class PlanningNotificationService:
                     | (UserAssignment.end_date >= week_start_date)
                 ),
                 School.status == "ACTIVE",
+                School.data_origin == "PRODUCTION",
             )
             .distinct()
             .all()

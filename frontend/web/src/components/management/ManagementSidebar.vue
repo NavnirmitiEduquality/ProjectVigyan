@@ -4,13 +4,27 @@ import VigyanLogo from '../brand/VigyanLogo.vue'
 defineProps<{
   isRailCollapsed: boolean
   isMobileDrawerOpen: boolean
-  activeSection: 'overview' | 'schools' | 'students' | 'teachers' | 'session-planning'
+  activeSection:
+  | 'overview'
+  | 'academic-calendar'
+  | 'schools'
+  | 'students'
+  | 'teachers'
+  | 'session-planning'
 }>()
 
 const emit = defineEmits<{
   'toggle-collapse': []
   'close-drawer': []
-  navigate: [section: 'overview' | 'schools' | 'students' | 'teachers' | 'session-planning']
+  navigate: [
+    section:
+    | 'overview'
+    | 'academic-calendar'
+    | 'schools'
+    | 'students'
+    | 'teachers'
+    | 'session-planning',
+  ]
 }>()
 </script>
 
@@ -56,8 +70,12 @@ const emit = defineEmits<{
           <span class="ov-sidebar-label ov-nav-label">Overview</span>
           <span class="ov-nav-tooltip" aria-hidden="true">Overview</span>
         </a>
-        <a href="#calendar" @click="emit('close-drawer')" class="ov-nav-item" title="Academic Calendar">
-          <span class="material-symbols-outlined ov-nav-icon" aria-hidden="true">calendar_month</span>
+        <a href="#academic-calendar" @click.prevent="emit('navigate', 'academic-calendar'); emit('close-drawer')"
+          class="ov-nav-item" :class="{ 'ov-nav-item--active': activeSection === 'academic-calendar' }"
+          title="Academic Calendar">
+          <span class="material-symbols-outlined ov-nav-icon" aria-hidden="true">
+            calendar_month
+          </span>
           <span class="ov-sidebar-label ov-nav-label">Academic Calendar</span>
           <span class="ov-nav-tooltip" aria-hidden="true">Academic Calendar</span>
         </a>

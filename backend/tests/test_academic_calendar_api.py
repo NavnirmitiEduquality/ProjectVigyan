@@ -17,6 +17,7 @@ from app.models import (
     AcademicYear,
     ClassDivision,
     Role,
+    School,
     SessionPlanItem,
     SessionPlanWeek,
     User,
@@ -26,6 +27,7 @@ from app.models import (
     Permission,
     RolePermission,
 )
+from app.services.auth_service import hash_password
 from app.services.academic_calendar.service import AcademicCalendarService
 from app.services.session_plan.service import SessionPlanService
 
@@ -40,8 +42,6 @@ if not DEMO_PASSWORD:
     )
 
 client = TestClient(app)
-PARA_TEACHER_EMAIL = "pt001@demo.vigyan.com"
-SECOND_TEACHER_EMAIL = "pt002@demo.vigyan.com"
 
 
 def login(email: str) -> str:
@@ -57,248 +57,235 @@ def auth_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def user_id(email: str) -> UUID:
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.email == email).one()
-        return user.id
-    finally:
-        db.close()
-
-
 @pytest.fixture
 def calendar_setup():
     db = SessionLocal()
-    year = AcademicYear(
-        name=f"API-{uuid4()}",
-        start_date=date(2026, 10, 1),
-        end_date=date(2027, 9, 30),
-        is_active=True,
-        data_origin="TEST",
-    )
-    db.add(year)
-    db.flush()
+    suffix = uuid4().hex
+    created_user_ids = []
+    created_school_ids = []
+    result = None
 
-    teacher_id = user_id(PARA_TEACHER_EMAIL)
-    teacher = db.query(User).filter(User.id == teacher_id).one()
-
-    assignment = (
-        db.query(UserAssignment)
-        .filter(
-            UserAssignment.user_id == teacher_id,
-            UserAssignment.is_active.is_(True),
-            UserAssignment.school_id.is_not(None),
-        )
-        .order_by(UserAssignment.start_date.desc())
-        .first()
-    )
-    if assignment is None:
-        db.rollback()
-        db.close()
-        pytest.skip("Demo para-teacher school assignment is required.")
-
-    # Dedicated test teacher prevents dependence on populated demo planning weeks.
-    test_teacher_email = f"calendar-pt-{uuid4()}@example.com"
-    test_teacher = User(
-        user_code=f"CAL-PT-{uuid4().hex[:8]}",
-        full_name="Academic Calendar API Test Para Teacher",
-        email=test_teacher_email,
-        password_hash=teacher.password_hash,
-        status="ACTIVE",
-        data_origin="TEST",
-    )
-    db.add(test_teacher)
-    db.flush()
-
-    para_teacher_role = db.query(Role).filter(Role.code == "PARA_TEACHER").one()
-    db.add(
-        UserRole(
-            user_id=test_teacher.id,
-            role_id=para_teacher_role.id,
+    try:
+        year = AcademicYear(
+            name=f"API-{suffix}",
+            start_date=date(2026, 10, 1),
+            end_date=date(2027, 9, 30),
             is_active=True,
-        )
-    )
-    db.add(
-        UserAssignment(
-            user_id=test_teacher.id,
-            scope_type="SCHOOL",
-            school_id=assignment.school_id,
-            start_date=date(2020, 1, 1),
-            end_date=None,
-            is_active=True,
-        )
-    )
-    db.flush()
-
-    admin_email = f"calendar-admin-{uuid4()}@example.com"
-    admin = User(
-        user_code=f"CAL-ADMIN-{uuid4().hex[:8]}",
-        full_name="Calendar API Test Administrator",
-        email=admin_email,
-        password_hash=teacher.password_hash,
-        status="ACTIVE",
-        data_origin="TEST",
-    )
-    db.add(admin)
-    db.flush()
-
-    data_manager_email = f"calendar-dm-{uuid4()}@example.com"
-    data_manager = User(
-        user_code=f"CAL-DM-{uuid4().hex[:8]}",
-        full_name="Calendar API Test Data Manager",
-        email=data_manager_email,
-        password_hash=teacher.password_hash,
-        status="ACTIVE",
-        data_origin="TEST",
-    )
-    db.add(data_manager)
-    db.flush()
-
-    db.add_all(
-        [
-            UserRole(
-                user_id=admin.id,
-                role_id=db.query(Role).filter(Role.code == "PLATFORM_OWNER").one().id,
-                is_active=True,
-            ),
-            UserRole(
-                user_id=data_manager.id,
-                role_id=db.query(Role).filter(Role.code == "DATA_MANAGER").one().id,
-                is_active=True,
-            ),
-        ]
-    )
-
-    cross_teacher_role_emails = {}
-    for role_code in ("STEM_COORDINATOR", "MANAGEMENT", "SYSTEM_ADMIN"):
-        email = f"calendar-{role_code.lower()}-{uuid4()}@example.com"
-        role_user = User(
-            user_code=f"CAL-{role_code[:4]}-{uuid4().hex[:8]}",
-            full_name=f"Calendar API Test {role_code}",
-            email=email,
-            password_hash=teacher.password_hash,
-            status="ACTIVE",
             data_origin="TEST",
         )
-        db.add(role_user)
-        db.flush()
-        role = db.query(Role).filter(Role.code == role_code).one()
-        db.add(UserRole(user_id=role_user.id, role_id=role.id, is_active=True))
-        cross_teacher_role_emails[role_code] = email
+        db.add(year)
 
-    db.flush()
+        password_hash = hash_password(DEMO_PASSWORD)
 
-    class_division = (
-        db.query(ClassDivision)
-        .filter(
-            ClassDivision.school_id == assignment.school_id,
-            ClassDivision.data_origin == "DEMO",
+        para_teacher_role = (
+            db.query(Role).filter(Role.code == "PARA_TEACHER").one()
         )
-        .order_by(ClassDivision.id)
-        .first()
-    )
-    if class_division is None:
-        db.rollback()
-        db.close()
-        pytest.skip("Demo class division is required.")
 
-    week_start = date(2027, 1, 4)
-    latest_week_start = date(2027, 9, 20)
-    while week_start <= latest_week_start:
-        existing_week = (
-            db.query(SessionPlanWeek)
-            .filter(
-                SessionPlanWeek.para_teacher_id == test_teacher.id,
-                SessionPlanWeek.week_start_date == week_start,
+        teachers = []
+        for index in (1, 2):
+            school = School(
+                school_code=f"CAL-{suffix[:8]}-{index}",
+                school_name=f"Academic Calendar Test School {index}",
+                status="ACTIVE",
+                data_origin="TEST",
             )
-            .first()
+            db.add(school)
+            db.flush()
+            created_school_ids.append(school.id)
+
+            division = ClassDivision(
+                school_id=school.id,
+                class_level=5,
+                division="A",
+                status="ACTIVE",
+                data_origin="TEST",
+            )
+            db.add(division)
+
+            teacher_email = f"calendar-pt{index}-{suffix}@example.com"
+            teacher = User(
+                user_code=f"CAL-PT{index}-{suffix[:8]}",
+                account_category="PARA_TEACHER",
+                full_name=f"Academic Calendar Test Para Teacher {index}",
+                email=teacher_email,
+                password_hash=password_hash,
+                status="ACTIVE",
+                data_origin="TEST",
+            )
+            db.add(teacher)
+            db.flush()
+            created_user_ids.append(teacher.id)
+
+            db.add_all(
+                [
+                    UserRole(
+                        user_id=teacher.id,
+                        role_id=para_teacher_role.id,
+                        is_active=True,
+                    ),
+                    UserAssignment(
+                        user_id=teacher.id,
+                        scope_type="SCHOOL",
+                        school_id=school.id,
+                        start_date=date(2020, 1, 1),
+                        end_date=None,
+                        is_active=True,
+                    ),
+                ]
+            )
+            teachers.append(
+                {
+                    "id": teacher.id,
+                    "email": teacher_email,
+                    "school_id": school.id,
+                    "division_id": division.id,
+                }
+            )
+
+        role_users = {}
+
+        role_codes = {
+            "admin": ("PLATFORM_OWNER", "PLATFORM_OWNER"),
+            "data_manager": ("DATA_MANAGER", "DATA_MANAGER"),
+            "stem_coordinator": ("STEM_COORDINATOR", "STEM_COORDINATOR"),
+            "management": ("MANAGEMENT", "MANAGEMENT"),
+            "system_admin": ("SYSTEM_ADMIN", "SYSTEM_ADMIN"),
+        }
+
+        for key, (role_code, account_category) in role_codes.items():
+            email = f"calendar-{key}-{suffix}@example.com"
+            user = User(
+                user_code=f"CAL-{key[:8].upper()}-{suffix[:8]}",
+                account_category=account_category,
+                full_name=f"Academic Calendar Test {key.replace('_', ' ').title()}",
+                email=email,
+                password_hash=password_hash,
+                status="ACTIVE",
+                data_origin="TEST",
+            )
+            db.add(user)
+            db.flush()
+            created_user_ids.append(user.id)
+
+            role = db.query(Role).filter(Role.code == role_code).one()
+            db.add(
+                UserRole(
+                    user_id=user.id,
+                    role_id=role.id,
+                    is_active=True,
+                )
+            )
+            role_users[key] = {
+                "id": user.id,
+                "email": email,
+            }
+
+        week_start = date(2027, 1, 4)
+        service = SessionPlanService()
+
+        week = service.get_or_create_week(
+            db,
+            para_teacher_id=teachers[0]["id"],
+            week_start_date=week_start,
+            data_origin="TEST",
         )
-        if existing_week is None:
-            break
-        week_start += timedelta(days=7)
+        item = service.create_item(
+            db,
+            para_teacher_id=teachers[0]["id"],
+            session_plan_week_id=week.id,
+            class_division_id=teachers[0]["division_id"],
+            planned_date=week_start,
+            sequence_no=1,
+            planned_start_time=time(9, 0),
+            planned_end_time=time(9, 45),
+            data_origin="TEST",
+        )
 
-    if week_start > latest_week_start:
+        db.commit()
+
+        result = {
+            "year_id": year.id,
+            "teacher_id": teachers[1]["id"],
+            "teacher_email": teachers[1]["email"],
+            "test_teacher_id": teachers[0]["id"],
+            "test_teacher_email": teachers[0]["email"],
+            "admin_email": role_users["admin"]["email"],
+            "data_manager_email": role_users["data_manager"]["email"],
+            "cross_teacher_role_emails": {
+                "STEM_COORDINATOR": role_users["stem_coordinator"]["email"],
+                "MANAGEMENT": role_users["management"]["email"],
+                "SYSTEM_ADMIN": role_users["system_admin"]["email"],
+            },
+            "item_id": item.id,
+            "week_id": week.id,
+            "week_start": week_start,
+            "holiday_ids": [],
+        }
+
+    except Exception:
         db.rollback()
+        raise
+    finally:
         db.close()
-        pytest.skip("No free planning week within the fixture academic year.")
 
-    assert date(2026, 10, 1) <= week_start
-    assert week_start + timedelta(days=6) <= date(2027, 9, 30)
-
-    service = SessionPlanService()
-    week = service.get_or_create_week(
-        db,
-        para_teacher_id=test_teacher.id,
-        week_start_date=week_start,
-        data_origin="TEST",
-    )
-    item = service.create_item(
-        db,
-        para_teacher_id=test_teacher.id,
-        session_plan_week_id=week.id,
-        class_division_id=class_division.id,
-        planned_date=week_start,
-        sequence_no=1,
-        planned_start_time=time(9, 0),
-        planned_end_time=time(9, 45),
-        data_origin="TEST",
-    )
-    db.commit()
-
-    result = {
-        "year_id": year.id,
-        "teacher_id": teacher_id,
-        "test_teacher_id": test_teacher.id,
-        "test_teacher_email": test_teacher_email,
-        "admin_email": admin_email,
-        "data_manager_email": data_manager_email,
-        "cross_teacher_role_emails": cross_teacher_role_emails,
-        "item_id": item.id,
-        "week_id": week.id,
-        "week_start": week_start,
-        "holiday_ids": [],
-    }
-    db.close()
     yield result
 
     cleanup = SessionLocal()
     try:
-        test_emails = [
-            result["test_teacher_email"],
-            result["admin_email"],
-            result["data_manager_email"],
-            *result["cross_teacher_role_emails"].values(),
-        ]
-        rows = cleanup.query(User.id).filter(User.email.in_(test_emails)).all()
-        test_user_ids = [row[0] for row in rows]
+        if result is not None:
+            cleanup.query(PlanningNotification).filter(
+                PlanningNotification.recipient_id.in_(created_user_ids)
+                | PlanningNotification.para_teacher_id.in_(created_user_ids)
+            ).delete(synchronize_session=False)
 
-        cleanup.query(SessionPlanItem).filter(
-            SessionPlanItem.id == result["item_id"]
-        ).delete(synchronize_session=False)
-        cleanup.query(SessionPlanWeek).filter(
-            SessionPlanWeek.id == result["week_id"]
-        ).delete(synchronize_session=False)
-        cleanup.query(AcademicHoliday).filter(
-            AcademicHoliday.academic_year_id == result["year_id"]
-        ).delete(synchronize_session=False)
-        cleanup.query(AcademicYear).filter(
-            AcademicYear.id == result["year_id"]
-        ).delete(synchronize_session=False)
+            cleanup.query(AuthSession).filter(
+                AuthSession.user_id.in_(created_user_ids)
+            ).delete(synchronize_session=False)
 
-        if test_user_ids:
+            cleanup.query(SessionPlanItem).filter(
+                SessionPlanItem.id == result["item_id"]
+            ).delete(synchronize_session=False)
+
+            cleanup.query(SessionPlanWeek).filter(
+                SessionPlanWeek.id == result["week_id"]
+            ).delete(synchronize_session=False)
+
+            cleanup.query(AcademicHoliday).filter(
+                AcademicHoliday.academic_year_id == result["year_id"]
+            ).delete(synchronize_session=False)
+
+            cleanup.query(AcademicYear).filter(
+                AcademicYear.id == result["year_id"]
+            ).delete(synchronize_session=False)
+
+        if created_user_ids:
             cleanup.query(UserRole).filter(
-                UserRole.user_id.in_(test_user_ids)
+                UserRole.user_id.in_(created_user_ids)
             ).delete(synchronize_session=False)
+
             cleanup.query(UserAssignment).filter(
-                UserAssignment.user_id.in_(test_user_ids)
+                UserAssignment.user_id.in_(created_user_ids)
             ).delete(synchronize_session=False)
-            cleanup.query(User).filter(User.id.in_(test_user_ids)).delete(
-                synchronize_session=False
-            )
+
+            cleanup.query(User).filter(
+                User.id.in_(created_user_ids)
+            ).delete(synchronize_session=False)
+
+        if created_school_ids:
+            cleanup.query(ClassDivision).filter(
+                ClassDivision.school_id.in_(created_school_ids)
+            ).delete(synchronize_session=False)
+
+            cleanup.query(School).filter(
+                School.id.in_(created_school_ids)
+            ).delete(synchronize_session=False)
+
         cleanup.commit()
+    except Exception:
+        cleanup.rollback()
+        raise
     finally:
         cleanup.close()
-
 
 def test_calendar_requires_authentication(calendar_setup):
     response = client.get(
@@ -349,12 +336,12 @@ def test_para_teacher_can_view_own_calendar(calendar_setup):
 
 
 def test_para_teacher_cannot_view_another_teacher_calendar(calendar_setup):
-    token = login(PARA_TEACHER_EMAIL)
+    token = login(calendar_setup["test_teacher_email"])
     response = client.get(
         "/api/v1/academic-calendar",
         headers=auth_headers(token),
         params={
-            "para_teacher_id": str(user_id(SECOND_TEACHER_EMAIL)),
+            "para_teacher_id": str(calendar_setup["teacher_id"]),
             "start_date": "2026-10-01",
             "end_date": "2026-10-03",
         },
@@ -366,22 +353,41 @@ def test_para_teacher_cannot_view_another_teacher_calendar(calendar_setup):
     "role_code",
     ["DATA_MANAGER", "STEM_COORDINATOR", "MANAGEMENT", "SYSTEM_ADMIN"],
 )
-def test_project_wide_roles_can_view_another_teacher_calendar(calendar_setup, role_code):
+def test_project_wide_roles_can_view_another_teacher_calendar(
+    calendar_setup, role_code
+):
     email = (
         calendar_setup["data_manager_email"]
         if role_code == "DATA_MANAGER"
         else calendar_setup["cross_teacher_role_emails"][role_code]
     )
     token = login(email)
-    response = client.get(
-        "/api/v1/academic-calendar",
-        headers=auth_headers(token),
-        params={
-            "para_teacher_id": str(user_id(SECOND_TEACHER_EMAIL)),
-            "start_date": "2026-10-01",
-            "end_date": "2026-10-03",
-        },
-    )
+
+    db = SessionLocal()
+    try:
+        fixture_year = (
+            db.query(AcademicYear)
+            .filter(AcademicYear.id == calendar_setup["year_id"])
+            .one()
+        )
+    finally:
+        db.close()
+
+    with patch.object(
+        AcademicCalendarService,
+        "get_active_academic_year",
+        return_value=fixture_year,
+    ):
+        response = client.get(
+            "/api/v1/academic-calendar",
+            headers=auth_headers(token),
+            params={
+                "para_teacher_id": str(calendar_setup["teacher_id"]),
+                "start_date": "2026-10-01",
+                "end_date": "2026-10-03",
+            },
+        )
+
     assert response.status_code == 200, response.text
 
 
@@ -452,7 +458,7 @@ def test_data_manager_can_manage_holidays_and_list_them(calendar_setup):
 
 
 def test_para_teacher_cannot_manage_holidays(calendar_setup):
-    token = login(PARA_TEACHER_EMAIL)
+    token = login(calendar_setup["test_teacher_email"])
     response = client.post(
         "/api/v1/academic-calendar/holidays",
         headers=auth_headers(token),
@@ -699,14 +705,14 @@ def academic_years_list_setup():
             name=f"Years-List-Demo-{suffix}",
             start_date=date(2027, 4, 1),
             end_date=date(2028, 3, 31),
-            is_active=True,
+            is_active=False,
             data_origin="DEMO",
         ),
         AcademicYear(
             name=f"Years-List-Test-{suffix}",
             start_date=date(2028, 4, 1),
             end_date=date(2029, 3, 31),
-            is_active=True,
+            is_active=False,
             data_origin="TEST",
         ),
     ]
@@ -715,15 +721,11 @@ def academic_years_list_setup():
     try:
         db.add_all(years)
 
-        password_hash = (
-            db.query(User.password_hash)
-            .filter(User.email == PARA_TEACHER_EMAIL)
-            .scalar()
-        )
-        assert password_hash is not None
+        password_hash = hash_password(DEMO_PASSWORD)
 
         user = User(
             user_code=f"YEARS-LIST-{suffix[:12]}",
+            account_category="PARA_TEACHER",
             full_name="Academic Year List API Test User",
             email=f"years-list-{suffix}@example.com",
             password_hash=password_hash,
@@ -808,8 +810,9 @@ def test_list_academic_years_requires_authentication():
 
 def test_list_academic_years_filters_and_orders_production_years(
     academic_years_list_setup,
+    calendar_setup,
 ):
-    token = login(PARA_TEACHER_EMAIL)
+    token = login(calendar_setup["test_teacher_email"])
     response = client.get(
         "/api/v1/academic-calendar/years",
         headers=auth_headers(token),

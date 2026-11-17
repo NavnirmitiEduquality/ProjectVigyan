@@ -134,7 +134,7 @@ def test_get_active_academic_year(db):
         start_date=date(2026, 6, 1),
         end_date=date(2027, 5, 31),
         is_active=True,
-        data_origin="TEST",
+        data_origin="PRODUCTION",
     )
 
     query = MagicMock()
@@ -146,6 +146,7 @@ def test_get_active_academic_year(db):
     result = AcademicCalendarService.get_active_academic_year(db)
 
     assert result.id == academic_year.id
+    assert result.data_origin == "PRODUCTION"
     assert result.is_active is True
 
 
@@ -157,6 +158,7 @@ def test_get_active_academic_year_when_none_exists(db):
     with pytest.raises(ActiveAcademicYearNotFoundError):
         AcademicCalendarService.get_active_academic_year(db)
 
+
 def test_create_academic_year_rejects_invalid_date_range(db):
     with pytest.raises(ValueError, match="start_date must be before end_date"):
         AcademicCalendarService.create_academic_year(
@@ -166,6 +168,50 @@ def test_create_academic_year_rejects_invalid_date_range(db):
             end_date=date(2026, 6, 1),
         )
 
+
+def test_creating_active_production_year_deactivates_previous_production_year(db):
+    suffix = uuid4().hex[:8]
+
+    first_year = AcademicCalendarService.create_academic_year(
+        db,
+        name=f"Prod-One-{suffix}",
+        start_date=date(2026, 6, 1),
+        end_date=date(2027, 5, 31),
+        is_active=True,
+        data_origin="PRODUCTION",
+    )
+    db.flush()
+
+    test_year = AcademicCalendarService.create_academic_year(
+        db,
+        name=f"Test-Year-{suffix}",
+        start_date=date(2028, 6, 1),
+        end_date=date(2029, 5, 31),
+        is_active=True,
+        data_origin="TEST",
+    )
+    db.flush()
+
+    second_year = AcademicCalendarService.create_academic_year(
+        db,
+        name=f"Prod-Two-{suffix}",
+        start_date=date(2027, 6, 1),
+        end_date=date(2028, 5, 31),
+        is_active=True,
+        data_origin="PRODUCTION",
+    )
+
+    db.refresh(first_year)
+    db.refresh(test_year)
+
+    assert first_year.is_active is False
+    assert test_year.is_active is True
+    assert second_year.is_active is True
+
+    selected = AcademicCalendarService.get_active_academic_year(db)
+    assert selected.id == second_year.id
+
+    db.rollback()
 
 
 def test_create_academic_year_rejects_duplicate_name(db):
@@ -601,9 +647,11 @@ def test_aggregation_with_holiday_and_reschedule(db):
     user = User(
         id=user_id,
         user_code=f"U_{uuid4().hex[:6]}",
+        account_category="PARA_TEACHER",
         full_name="T",
         email=f"{uuid4().hex[:6]}@t.com",
         password_hash="h",
+        data_origin="TEST",
     )
     db.add(user)
 

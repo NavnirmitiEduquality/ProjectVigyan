@@ -78,7 +78,10 @@ class AcademicCalendarService:
     def get_active_academic_year(db: Session) -> AcademicYear:
         academic_year = (
             db.query(AcademicYear)
-            .filter(AcademicYear.is_active.is_(True))
+            .filter(
+                AcademicYear.is_active.is_(True),
+                AcademicYear.data_origin == "PRODUCTION",
+            )
             .order_by(AcademicYear.start_date.desc())
             .first()
         )
@@ -126,7 +129,20 @@ class AcademicCalendarService:
             raise AcademicYearAlreadyExistsError(
                 f"Academic year already exists: {name}"
             )
-
+        # Only one production academic year should be active at a time.
+        # TEST and DEMO records must never affect production year selection.
+        if data_origin == "PRODUCTION" and is_active:
+            (
+                db.query(AcademicYear)
+                .filter(
+                    AcademicYear.is_active.is_(True),
+                    AcademicYear.data_origin == "PRODUCTION",
+                )
+                .update(
+                    {AcademicYear.is_active: False},
+                    synchronize_session=False,
+                )
+            )
         academic_year = AcademicYear(
             name=name,
             start_date=start_date,

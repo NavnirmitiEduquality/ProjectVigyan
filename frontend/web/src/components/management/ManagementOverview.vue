@@ -34,6 +34,11 @@ import type {
   InspectionRecord,
 } from '../../services/observations'
 
+import {
+  listPlanningNotifications,
+  type PlanningNotification,
+} from '../../services/planningNotifications'
+
 import { listHolidays } from '../../services/academicCalendar'
 import type { AcademicYear } from '../../services/academicCalendar'
 import { isDarkTheme, type ThemeMode } from '../../services/theme'
@@ -49,6 +54,7 @@ import EngagementDistributionChart from './EngagementDistributionChart.vue'
 import SchoolClassPerformanceChart from './SchoolClassPerformanceChart.vue'
 import AssessmentProgressSummary from './AssessmentProgressSummary.vue'
 import SchoolsView from './schools/SchoolsView.vue'
+import AcademicCalendar from './academic-calendar/AcademicCalendar.vue'
 import StudentsDirectory from './students/StudentsDirectory.vue'
 import TeachersDirectory from './teachers/TeachersDirectory.vue'
 import { listSchools, type School } from '../../services/schools'
@@ -56,7 +62,13 @@ import {
   listClassDivisions,
   type ClassDivision,
 } from '../../services/classDivisions'
-type ManagementSection = 'overview' | 'schools' | 'students' | 'teachers' | 'session-planning'
+type ManagementSection =
+  | 'overview'
+  | 'academic-calendar'
+  | 'schools'
+  | 'students'
+  | 'teachers'
+  | 'session-planning'
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 const props = defineProps<{
@@ -79,7 +91,9 @@ const activeSection = computed<ManagementSection>(() =>
         ? 'teachers'
         : route.meta.section === 'session-planning'
           ? 'session-planning'
-          : 'overview',
+          : route.meta.section === 'academic-calendar'
+            ? 'academic-calendar'
+            : 'overview',
 )
 
 // ─── Theme ────────────────────────────────────────────────────────────────────
@@ -151,7 +165,9 @@ const academicYears = ref<AcademicYear[]>([])
 const selectedYear = ref('')
 const isLoadingAcademicYears = ref(false)
 const academicYearError = ref('')
-
+const activeAcademicYear = computed(
+  () => academicYears.value.find((year) => year.is_active) ?? null,
+)
 const canManageCalendar = computed(
   () => props.currentUser?.permissions.includes('calendar.manage') ?? false,
 )
@@ -717,6 +733,42 @@ watch(canViewReports, () => {
   void loadReports()
 })
 
+// ─── Planning Notifications ──────────────────────────────────────────────────
+const canViewPlanningNotifications = computed(
+  () =>
+    props.currentUser?.permissions.includes('planning_notification.view') ?? false,
+)
+
+const planningNotifications = ref<PlanningNotification[]>([])
+const isLoadingPlanningNotifications = ref(false)
+const planningNotificationsError = ref('')
+
+const unreadPlanningNotificationCount = computed(
+  () => planningNotifications.value.filter((item) => !item.is_read).length,
+)
+
+async function loadPlanningNotifications() {
+  if (!canViewPlanningNotifications.value) {
+    planningNotifications.value = []
+    planningNotificationsError.value = ''
+    return
+  }
+
+  isLoadingPlanningNotifications.value = true
+  planningNotificationsError.value = ''
+
+  try {
+    planningNotifications.value = await listPlanningNotifications()
+  } catch (error) {
+    planningNotificationsError.value =
+      error instanceof Error
+        ? error.message
+        : 'Unable to load planning notifications.'
+  } finally {
+    isLoadingPlanningNotifications.value = false
+  }
+}
+
 // ─── User initials ────────────────────────────────────────────────────────────
 const userInitials = computed(() => {
   if (!props.currentUser?.full_name) return '—'
@@ -741,6 +793,7 @@ onMounted(() => {
   void loadAcademicYears()
   void loadOperationalSummaries()
   void loadHolidaySummary()
+  void loadPlanningNotifications()
 })
 
 onUnmounted(() => {
@@ -774,13 +827,18 @@ onUnmounted(() => {
         :selected-year="selectedYear" :academic-years="academicYears"
         :is-loading-academic-years="isLoadingAcademicYears" :academic-year-error="academicYearError"
         :can-manage-calendar="canManageCalendar" :theme-mode="themeMode" :display-name="displayName"
-        :user-initials="userInitials" @open-mobile-drawer="openMobileDrawer" @toggle-sidebar="toggleSidebarCollapse"
-        @update:selected-year="selectedYear = $event" @create-academic-year="openCreateAcademicYear"
-        @change-theme="applyTheme" @sign-out="emit('returnToSignIn')" />
-
+        :user-initials="userInitials" :unread-planning-notification-count="unreadPlanningNotificationCount"
+        :can-view-planning-notifications="canViewPlanningNotifications" :planning-notifications="planningNotifications"
+        :is-loading-planning-notifications="isLoadingPlanningNotifications"
+        :planning-notifications-error="planningNotificationsError" @open-mobile-drawer="openMobileDrawer"
+        @toggle-sidebar="toggleSidebarCollapse" @update:selected-year="selectedYear = $event"
+        @create-academic-year="openCreateAcademicYear" @change-theme="applyTheme" @sign-out="emit('returnToSignIn')"
+        @refresh-planning-notifications="loadPlanningNotifications" />
       <!-- SCROLLABLE WORKSPACE -->
       <main class="ov-workspace" :id="activeSection">
-        <SessionPlanning v-if="activeSection === 'session-planning'" :current-user="props.currentUser" />
+        <AcademicCalendar v-if="activeSection === 'academic-calendar'" :current-user="props.currentUser"
+          :academic-year="activeAcademicYear" :para-teachers="availableParaTeachers" />
+        <SessionPlanning v-else-if="activeSection === 'session-planning'" :current-user="props.currentUser" />
         <SchoolsView v-else-if="activeSection === 'schools'" :current-user="props.currentUser" />
         <StudentsDirectory v-else-if="activeSection === 'students'" :current-user="props.currentUser" />
         <TeachersDirectory v-else-if="activeSection === 'teachers'" :current-user="props.currentUser" />

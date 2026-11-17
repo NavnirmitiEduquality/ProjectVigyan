@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import type { CurrentUser } from '../../../services/auth'
 import { listClassDivisions, type ClassDivision } from '../../../services/classDivisions'
 import { listParaTeachers, type ParaTeacher } from '../../../services/teachers'
@@ -25,6 +26,7 @@ import {
   type SessionPlanWeek,
 } from '../../../services/sessionPlans'
 
+const route = useRoute()
 const MIN_WEEKLY_ITEMS = 6
 const props = defineProps<{ currentUser: CurrentUser | null }>()
 
@@ -629,10 +631,54 @@ watch(
   },
 )
 
-onMounted(() => {
-  void loadClasses()
-  void loadTeachers()
-  void loadWeek()
+onMounted(async () => {
+  const requestedItemId =
+    typeof route.query.item_id === 'string'
+      ? route.query.item_id
+      : ''
+
+  const requestedTeacherId =
+    typeof route.query.teacher_id === 'string'
+      ? route.query.teacher_id
+      : ''
+
+  const requestedWeek =
+    typeof route.query.week_start === 'string'
+      ? route.query.week_start
+      : ''
+
+  if (
+    requestedWeek &&
+    /^\d{4}-\d{2}-\d{2}$/.test(requestedWeek)
+  ) {
+    weekStart.value = requestedWeek
+  }
+
+  if (hasViewAll.value && requestedTeacherId) {
+    selectedTeacherId.value = requestedTeacherId
+  } else if (props.currentUser) {
+    selectedTeacherId.value = props.currentUser.user_id
+  }
+
+  await Promise.all([
+    loadClasses(),
+    loadTeachers(),
+  ])
+
+  await loadWeek()
+
+  if (requestedItemId) {
+    const requestedItem = items.value.find(
+      item => item.id === requestedItemId,
+    )
+
+    if (requestedItem) {
+      await openContent(requestedItem)
+    } else {
+      error.value =
+        'The requested session was not found in the selected planning week, or you do not have access to it.'
+    }
+  }
 })
 </script>
 
