@@ -45,6 +45,21 @@ import { isDarkTheme, type ThemeMode } from '../../services/theme'
 import ManagementSidebar from './ManagementSidebar.vue'
 import ManagementHeader from './ManagementHeader.vue'
 import SessionPlanning from './session-planning/SessionPlanning.vue'
+import UsersDirectory from './administration/UsersDirectory.vue'
+import AssessmentDirectory from './assessments/AssessmentDirectory.vue'
+import AssessmentCreate from './assessments/AssessmentCreate.vue'
+import AssessmentScope from './assessments/AssessmentScope.vue'
+import AssessmentScoreImport from './assessments/AssessmentScoreImport.vue'
+import AssessmentReview from './assessments/AssessmentReview.vue'
+import AssessmentValidation from './assessments/AssessmentValidation.vue'
+import AssessmentSubmissionConfirmation from './assessments/AssessmentSubmissionConfirmation.vue'
+import AssessmentLedger from './assessments/AssessmentLedger.vue'
+import {
+  getAssessment,
+  getAssessmentWorkflow,
+  type Assessment,
+  type AssessmentImport,
+} from '../../services/assessments'
 import InstitutionalFooter from '../layout/InstitutionalFooter.vue'
 import ManagementMetricCard from './ManagementMetricCard.vue'
 import DeliveryTrajectoryChart from './DeliveryTrajectoryChart.vue'
@@ -69,6 +84,8 @@ type ManagementSection =
   | 'students'
   | 'teachers'
   | 'session-planning'
+  | 'assessments'
+  | 'administration'
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 const props = defineProps<{
@@ -83,17 +100,21 @@ const emit = defineEmits<{
 const route = useRoute()
 const router = useRouter()
 const activeSection = computed<ManagementSection>(() =>
-  route.meta.section === 'schools'
-    ? 'schools'
-    : route.meta.section === 'students'
-      ? 'students'
-      : route.meta.section === 'teachers'
-        ? 'teachers'
-        : route.meta.section === 'session-planning'
-          ? 'session-planning'
-          : route.meta.section === 'academic-calendar'
-            ? 'academic-calendar'
-            : 'overview',
+  route.meta.section === 'assessments'
+    ? 'assessments'
+    : route.meta.section === 'schools'
+      ? 'schools'
+      : route.meta.section === 'students'
+        ? 'students'
+        : route.meta.section === 'teachers'
+          ? 'teachers'
+          : route.meta.section === 'session-planning'
+            ? 'session-planning'
+            : route.meta.section === 'academic-calendar'
+              ? 'academic-calendar'
+              : route.meta.section === 'administration'
+                ? 'administration'
+                : 'overview',
 )
 
 // ─── Theme ────────────────────────────────────────────────────────────────────
@@ -124,6 +145,143 @@ function handleResize() {
     if (w >= 1280 && isRailCollapsed.value) {
       // Keep user's preference on large screens
     }
+  }
+}
+
+type AssessmentView =
+  | 'directory'
+  | 'create'
+  | 'scope'
+  | 'import'
+  | 'validation'
+  | 'review'
+  | 'confirmation'
+  | 'ledger'
+
+const assessmentView = ref<AssessmentView>('directory')
+const newlyCreatedAssessment = ref<Assessment | null>(null)
+const currentAssessmentImport = ref<AssessmentImport | null>(null)
+const submittedAssessment = ref<Assessment | null>(null)
+const assessmentScopeIds = ref<string[]>([])
+
+function openAssessmentCreate(): void {
+  if (!props.currentUser?.permissions.includes('assessment.create')) {
+    return
+  }
+
+  newlyCreatedAssessment.value = null
+  currentAssessmentImport.value = null
+  assessmentView.value = 'create'
+}
+
+function cancelAssessmentCreate(): void {
+  assessmentView.value = 'directory'
+}
+
+function handleAssessmentCreated(assessment: Assessment): void {
+  newlyCreatedAssessment.value = assessment
+  assessmentScopeIds.value = []
+  assessmentView.value = 'scope'
+}
+
+function cancelAssessmentScope(): void {
+  assessmentView.value = 'directory'
+}
+
+function handleAssessmentScopeSaved(assessment: Assessment): void {
+  newlyCreatedAssessment.value = assessment
+  currentAssessmentImport.value = null
+  assessmentScopeIds.value = [...assessmentScopeIds.value]
+  assessmentView.value = 'import'
+}
+
+function cancelAssessmentImport(): void {
+  assessmentView.value = 'scope'
+}
+
+function handleAssessmentImported(result: AssessmentImport): void {
+  currentAssessmentImport.value = result
+  assessmentView.value = 'validation'
+}
+
+function handleAssessmentImportUpdated(result: AssessmentImport): void {
+  currentAssessmentImport.value = result
+}
+
+function cancelAssessmentValidation(): void {
+  assessmentView.value = 'import'
+}
+
+function handleAssessmentReview(): void {
+  if (!currentAssessmentImport.value) return
+  assessmentView.value = 'review'
+}
+
+function cancelAssessmentReview(): void {
+  assessmentView.value = 'validation'
+}
+
+function handleAssessmentSubmitted(assessment: Assessment): void {
+  submittedAssessment.value = assessment
+  newlyCreatedAssessment.value = assessment
+  assessmentView.value = 'confirmation'
+}
+
+function openSubmittedResults(): void {
+  if (!submittedAssessment.value) return
+  assessmentView.value = 'ledger'
+}
+
+function returnToAssessmentDirectory(): void {
+  assessmentView.value = 'directory'
+  newlyCreatedAssessment.value = null
+  currentAssessmentImport.value = null
+  submittedAssessment.value = null
+}
+
+async function handleAssessmentDirectoryOpen(
+  assessmentId: string,
+): Promise<void> {
+  try {
+    const assessment = await getAssessment(assessmentId)
+
+    if (assessment.status === 'SUBMITTED') {
+      submittedAssessment.value = assessment
+      newlyCreatedAssessment.value = assessment
+      currentAssessmentImport.value = null
+      assessmentView.value = 'ledger'
+      return
+    }
+
+    const workflow = await getAssessmentWorkflow(assessmentId)
+
+    newlyCreatedAssessment.value = assessment
+    submittedAssessment.value = null
+    assessmentScopeIds.value = workflow.class_division_ids
+    currentAssessmentImport.value = workflow.latest_import
+
+    if (workflow.latest_import?.status === 'SUBMITTED') {
+      window.alert(
+        'This draft assessment has an inconsistent submitted import. Please contact the system administrator.',
+      )
+      return
+    }
+
+    if (workflow.latest_import?.status === 'VALIDATED') {
+      assessmentView.value = 'review'
+    } else if (workflow.latest_import) {
+      assessmentView.value = 'validation'
+    } else if (workflow.class_division_ids.length > 0) {
+      assessmentView.value = 'import'
+    } else {
+      assessmentView.value = 'scope'
+    }
+  } catch (error) {
+    window.alert(
+      error instanceof Error
+        ? error.message
+        : 'Unable to resume this assessment.',
+    )
   }
 }
 
@@ -450,6 +608,13 @@ const canViewCalendar = computed(
 
 const canViewReports = computed(
   () => props.currentUser?.permissions.includes('report.view') ?? false,
+)
+
+const canViewAdministration = computed(
+  () =>
+    props.currentUser?.permissions.includes('user.view') ||
+    props.currentUser?.permissions.includes('role.view') ||
+    false,
 )
 
 const observationStatuses = computed(() =>
@@ -814,8 +979,11 @@ onUnmounted(() => {
     <!-- SIDEBAR                                                                 -->
     <!-- ═══════════════════════════════════════════════════════════════════════ -->
     <ManagementSidebar :is-rail-collapsed="isRailCollapsed" :is-mobile-drawer-open="isMobileDrawerOpen"
-      :active-section="activeSection" @toggle-collapse="toggleSidebarCollapse" @close-drawer="closeMobileDrawer"
-      @navigate="navigate" />
+      :active-section="activeSection"
+      :can-view-assessments="props.currentUser?.permissions.includes('assessment.view') ?? false"
+      :can-view-administration="canViewAdministration"
+      :can-create-assessments="props.currentUser?.permissions.includes('assessment.create') ?? false"
+      @toggle-collapse="toggleSidebarCollapse" @close-drawer="closeMobileDrawer" @navigate="navigate" />
 
     <!-- ═══════════════════════════════════════════════════════════════════════ -->
     <!-- MAIN CANVAS                                                             -->
@@ -823,7 +991,7 @@ onUnmounted(() => {
     <div class="ov-main" :class="mainMargin" id="ov-main-canvas">
 
       <ManagementHeader :is-rail-collapsed="isRailCollapsed"
-        :title="activeSection === 'schools' ? 'Schools & Classes' : activeSection === 'students' ? 'Students Directory' : activeSection === 'teachers' ? 'Teachers Directory' : activeSection === 'session-planning' ? 'Session Planning' : 'Management Overview'"
+        :title="activeSection === 'assessments' ? 'Assessment Directory' : activeSection === 'schools' ? 'Schools & Classes' : activeSection === 'students' ? 'Students Directory' : activeSection === 'administration' ? 'Administration' : activeSection === 'teachers' ? 'Teachers Directory' : activeSection === 'session-planning' ? 'Session Planning' : 'Management Overview' "
         :selected-year="selectedYear" :academic-years="academicYears"
         :is-loading-academic-years="isLoadingAcademicYears" :academic-year-error="academicYearError"
         :can-manage-calendar="canManageCalendar" :theme-mode="themeMode" :display-name="displayName"
@@ -836,12 +1004,66 @@ onUnmounted(() => {
         @refresh-planning-notifications="loadPlanningNotifications" />
       <!-- SCROLLABLE WORKSPACE -->
       <main class="ov-workspace" :id="activeSection">
-        <AcademicCalendar v-if="activeSection === 'academic-calendar'" :current-user="props.currentUser"
+        <AssessmentCreate v-if="activeSection === 'assessments' && assessmentView === 'create'"
+          @cancel="cancelAssessmentCreate" @created="handleAssessmentCreated" />
+
+        <AssessmentScope v-else-if="
+          activeSection === 'assessments'
+          && assessmentView === 'scope'
+          && newlyCreatedAssessment
+        " :assessment="newlyCreatedAssessment" :initial-class-division-ids="assessmentScopeIds"
+          @cancel="cancelAssessmentScope" @saved="handleAssessmentScopeSaved" />
+
+        <AssessmentScoreImport v-else-if="
+          activeSection === 'assessments'
+          && assessmentView === 'import'
+          && newlyCreatedAssessment
+        " :assessment="newlyCreatedAssessment" @cancel="cancelAssessmentImport" @imported="handleAssessmentImported" />
+
+        <AssessmentValidation v-else-if="
+          activeSection === 'assessments'
+          && assessmentView === 'validation'
+          && newlyCreatedAssessment
+          && currentAssessmentImport
+        " :assessment="newlyCreatedAssessment" :import-result="currentAssessmentImport"
+          @continue="handleAssessmentReview" @cancel="cancelAssessmentValidation"
+          @updated="handleAssessmentImportUpdated" />
+
+        <AssessmentReview v-else-if="
+          activeSection === 'assessments'
+          && assessmentView === 'review'
+          && newlyCreatedAssessment
+          && currentAssessmentImport
+        " :assessment="newlyCreatedAssessment" :import-result="currentAssessmentImport" @back="cancelAssessmentReview"
+          @submitted="handleAssessmentSubmitted" />
+        <AssessmentSubmissionConfirmation v-else-if="
+          activeSection === 'assessments'
+          && assessmentView === 'confirmation'
+          && submittedAssessment
+        " :assessment="submittedAssessment" @view-results="openSubmittedResults"
+          @back-to-directory="returnToAssessmentDirectory" />
+
+        <AssessmentLedger v-else-if="
+          activeSection === 'assessments'
+          && assessmentView === 'ledger'
+          && submittedAssessment
+        " :assessment="submittedAssessment" @back-to-directory="returnToAssessmentDirectory" />
+        <template v-else-if="activeSection === 'assessments'">
+          <div v-if="newlyCreatedAssessment" class="assessment-success-notice" role="status">
+            Assessment "{{ newlyCreatedAssessment.name }}" created and its scope saved.
+          </div>
+
+          <AssessmentDirectory :current-user="props.currentUser" @create="openAssessmentCreate"
+            @open="handleAssessmentDirectoryOpen" />
+        </template>
+
+        <AcademicCalendar v-else-if="activeSection === 'academic-calendar'" :current-user="props.currentUser"
           :academic-year="activeAcademicYear" :para-teachers="availableParaTeachers" />
         <SessionPlanning v-else-if="activeSection === 'session-planning'" :current-user="props.currentUser" />
         <SchoolsView v-else-if="activeSection === 'schools'" :current-user="props.currentUser" />
         <StudentsDirectory v-else-if="activeSection === 'students'" :current-user="props.currentUser" />
         <TeachersDirectory v-else-if="activeSection === 'teachers'" :current-user="props.currentUser" />
+        <UsersDirectory v-else-if="activeSection === 'administration'" :current-user="props.currentUser" />
         <template v-else>
           <section v-if="isCreateAcademicYearOpen" class="ov-create-year-panel" aria-labelledby="ov-create-year-title">
             <div class="ov-create-year-heading">
@@ -1706,6 +1928,17 @@ onUnmounted(() => {
   border: 1px solid var(--ov-border);
   border-radius: 10px;
   background: var(--ov-bg-surface);
+}
+
+.assessment-success-notice {
+  margin-bottom: 18px;
+  padding: 13px 16px;
+  border: 1px solid var(--ov-border);
+  border-radius: 9px;
+  background: var(--ov-bg-surface-subtle);
+  color: var(--ov-text-primary);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .ov-reporting-restricted h3 {

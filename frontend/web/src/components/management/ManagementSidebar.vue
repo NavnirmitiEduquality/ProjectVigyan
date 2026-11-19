@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import VigyanLogo from '../brand/VigyanLogo.vue'
 
-defineProps<{
+const props = defineProps<{
   isRailCollapsed: boolean
   isMobileDrawerOpen: boolean
+  canViewAssessments: boolean
+  canCreateAssessments: boolean
+  canViewAdministration: boolean
   activeSection:
   | 'overview'
   | 'academic-calendar'
@@ -11,6 +14,8 @@ defineProps<{
   | 'students'
   | 'teachers'
   | 'session-planning'
+  | 'assessments'
+  | 'administration'
 }>()
 
 const emit = defineEmits<{
@@ -23,7 +28,9 @@ const emit = defineEmits<{
     | 'schools'
     | 'students'
     | 'teachers'
-    | 'session-planning',
+    | 'session-planning'
+    | 'assessments'
+    | 'administration',
   ]
 }>()
 </script>
@@ -55,8 +62,9 @@ const emit = defineEmits<{
       </div>
 
       <!-- New Assessment CTA -->
-      <div class="ov-sidebar-cta">
-        <button class="ov-cta-btn" title="New Assessment">
+      <div v-if="props.canCreateAssessments" class="ov-sidebar-cta">
+        <button class="ov-cta-btn" title="New Assessment"
+          @click="emit('navigate', 'assessments'); emit('close-drawer')">
           <span class="material-symbols-outlined" aria-hidden="true">add</span>
           <span class="ov-sidebar-label">New Assessment</span>
         </button>
@@ -104,7 +112,9 @@ const emit = defineEmits<{
           <span class="ov-sidebar-label ov-nav-label">Teachers</span>
           <span class="ov-nav-tooltip" aria-hidden="true">Teachers</span>
         </a>
-        <a href="#assessments" @click="emit('close-drawer')" class="ov-nav-item" title="Assessments">
+        <a v-if="props.canViewAssessments" href="#assessments"
+          @click.prevent="emit('navigate', 'assessments'); emit('close-drawer')" class="ov-nav-item"
+          :class="{ 'ov-nav-item--active': activeSection === 'assessments' }" title="Assessments">
           <span class="material-symbols-outlined ov-nav-icon" aria-hidden="true">assignment</span>
           <span class="ov-sidebar-label ov-nav-label">Assessments</span>
           <span class="ov-nav-tooltip" aria-hidden="true">Assessments</span>
@@ -124,7 +134,9 @@ const emit = defineEmits<{
           <span class="ov-sidebar-label ov-nav-label">STEM Inspections</span>
           <span class="ov-nav-tooltip" aria-hidden="true">STEM Inspections</span>
         </a>
-        <a href="#admin" @click="emit('close-drawer')" class="ov-nav-item" title="Administration">
+        <a v-if="props.canViewAdministration" href="#administration"
+          @click.prevent="emit('navigate', 'administration'); emit('close-drawer')" class="ov-nav-item"
+          :class="{ 'ov-nav-item--active': activeSection === 'administration' }" title="Administration">
           <span class="material-symbols-outlined ov-nav-icon" aria-hidden="true">settings</span>
           <span class="ov-sidebar-label ov-nav-label-row">
             <span class="ov-nav-label-text">Administration</span>

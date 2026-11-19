@@ -85,6 +85,7 @@ def assessment_context():
     )
     user = User(
         user_code=f"AT-U-{suffix}",
+        account_category="DATA_MANAGER",
         full_name="Assessment Test User",
         email=f"assessment-service-{suffix}@example.com",
         password_hash="not-used-by-service-tests",

@@ -126,6 +126,11 @@ class AssessmentImportResponse(BaseModel):
     rows: list[ImportRowResponse]
 
 
+class AssessmentWorkflowResponse(BaseModel):
+    class_division_ids: list[UUID]
+    latest_import: AssessmentImportResponse | None
+
+
 class AssessmentResultResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -154,7 +159,7 @@ def _get_assessment_or_404(db: Session, assessment_id: UUID) -> Assessment:
 @router.post("", response_model=AssessmentResponse, status_code=status.HTTP_201_CREATED)
 def create_assessment(
     payload: AssessmentCreate,
-    current_user: User = Depends(require_permission("assessment.import")),
+    current_user: User = Depends(require_permission("assessment.create")),
     db: Session = Depends(get_db),
 ):
     require_school_access(payload.school_id, current_user, db)
@@ -193,6 +198,42 @@ def get_assessment(
     require_school_access(assessment.school_id, current_user, db)
     return assessment
 
+
+@router.get(
+    "/{assessment_id}/workflow",
+    response_model=AssessmentWorkflowResponse,
+)
+def get_assessment_workflow(
+    assessment_id: UUID,
+    current_user: User = Depends(require_permission("assessment.view")),
+    db: Session = Depends(get_db),
+):
+    assessment = _get_assessment_or_404(db, assessment_id)
+    require_school_access(assessment.school_id, current_user, db)
+
+    class_division_ids = [
+        scope.class_division_id
+        for scope in assessment.class_division_scopes
+    ]
+
+    latest_import = (
+        db.query(AssessmentImport)
+        .filter(AssessmentImport.assessment_id == assessment_id)
+        .order_by(
+            AssessmentImport.created_at.desc(),
+            AssessmentImport.id.desc(),
+        )
+        .first()
+    )
+
+    return AssessmentWorkflowResponse(
+        class_division_ids=class_division_ids,
+        latest_import=(
+            AssessmentImportResponse.model_validate(latest_import)
+            if latest_import is not None
+            else None
+        ),
+    )
 
 
 @router.put("/{assessment_id}/scope", response_model=AssessmentResponse)

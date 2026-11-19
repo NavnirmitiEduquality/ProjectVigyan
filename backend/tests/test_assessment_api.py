@@ -111,6 +111,7 @@ def assessment_api_setup():
     )
     manager = User(
         user_code=f"AA-M-{suffix}",
+        account_category="DATA_MANAGER",
         full_name="Assessment API Manager",
         email=f"assessment-manager-{suffix}@example.com",
         password_hash=hash_password(TEST_PASSWORD),
@@ -119,6 +120,7 @@ def assessment_api_setup():
     )
     viewer = User(
         user_code=f"AA-V-{suffix}",
+        account_category="MANAGEMENT",
         full_name="Assessment API Viewer",
         email=f"assessment-viewer-{suffix}@example.com",
         password_hash=hash_password(TEST_PASSWORD),
@@ -139,6 +141,7 @@ def assessment_api_setup():
 
     required_codes = {
         "assessment.view": "View Assessments",
+        "assessment.create": "Create Assessments",
         "assessment.import": "Import Assessments",
         "assessment.update": "Update Assessments",
         "assessment.submit": "Submit Assessments",
@@ -463,6 +466,43 @@ def test_permissions_and_school_scope(assessment_api_setup):
         manager_token,
         context["other_school"].id,
     ).status_code == 403
+
+
+def test_import_permission_does_not_allow_assessment_creation(
+    assessment_api_setup,
+):
+    context = assessment_api_setup
+    db = context["db"]
+    token = login(context["manager"])
+
+    # Create an assessment while the manager has create permission.
+    created = create_assessment(context, token)
+    assert created.status_code == 201, created.text
+    assessment_id = created.json()["id"]
+
+    # Remove only the create permission, leaving import permission intact.
+    create_permission = db.query(Permission).filter(
+        Permission.code == "assessment.create"
+    ).one()
+
+    db.query(RolePermission).filter(
+        RolePermission.role_id == context["manager_role"].id,
+        RolePermission.permission_id == create_permission.id,
+    ).delete(synchronize_session=False)
+    db.commit()
+
+    # Import permission alone must not allow creating assessments.
+    denied = create_assessment(context, token, configure_scope=False)
+    assert denied.status_code == 403, denied.text
+
+    # The same user must still be able to import scores.
+    imported = import_rows(
+        context,
+        token,
+        assessment_id,
+        [standard_row(context, context["student"], "10")],
+    )
+    assert imported.status_code == 201, imported.text
 
 
 def test_complete_roster_has_no_missing_student_warning(assessment_api_setup):
@@ -1200,3 +1240,146 @@ def test_csv_import_flags_duplicate_student_business_ids(assessment_api_setup):
     assert len(duplicate_rows) == 2
     assert any(row["validation_status"] == "ERROR" for row in duplicate_rows)
     assert body["error_count"] >= 1
+
+
+def test_assessment_workflow_recovers_scope_without_import(
+    assessment_api_setup,
+):
+    context = assessment_api_setup
+    manager_token = login(context["manager"])
+    viewer_token = login(context["viewer"])
+
+    created = create_assessment(context, manager_token)
+    assert created.status_code == 201, created.text
+    assessment_id = created.json()["id"]
+
+    response = client.get(
+        f"/api/v1/assessments/{assessment_id}/workflow",
+        headers=headers(viewer_token),
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["class_division_ids"] == [
+        str(context["division"].id)
+    ]
+    assert body["latest_import"] is None
+
+
+def test_assessment_workflow_recovers_latest_import_and_rows(
+    assessment_api_setup,
+):
+    context = assessment_api_setup
+    manager_token = login(context["manager"])
+    viewer_token = login(context["viewer"])
+
+    created = create_assessment(context, manager_token)
+    assert created.status_code == 201, created.text
+    assessment_id = created.json()["id"]
+
+    imported = import_rows(
+        context,
+        manager_token,
+        assessment_id,
+        [
+            standard_row(context, context["student"], "15"),
+            standard_row(context, context["second_student"], "12"),
+        ],
+    )
+    assert imported.status_code == 201, imported.text
+
+    original_import = imported.json()
+
+    response = client.get(
+        f"/api/v1/assessments/{assessment_id}/workflow",
+        headers=headers(viewer_token),
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["class_division_ids"] == [
+        str(context["division"].id)
+    ]
+
+    recovered_import = body["latest_import"]
+
+    assert recovered_import is not None
+    assert recovered_import["id"] == original_import["id"]
+    assert recovered_import["assessment_id"] == assessment_id
+    assert recovered_import["status"] == original_import["status"]
+    assert recovered_import["total_rows"] == 2
+    assert len(recovered_import["rows"]) == 2
+
+    recovered_student_ids = {
+        row["student_business_id"]
+        for row in recovered_import["rows"]
+    }
+
+    assert recovered_student_ids == {
+        context["student"].student_code,
+        context["second_student"].student_code,
+    }
+
+
+def test_assessment_workflow_enforces_authentication_permission_and_school_scope(
+    assessment_api_setup,
+):
+    context = assessment_api_setup
+    manager_token = login(context["manager"])
+    viewer_token = login(context["viewer"])
+
+    created = create_assessment(context, manager_token)
+    assert created.status_code == 201, created.text
+    assessment_id = created.json()["id"]
+
+    workflow_url = f"/api/v1/assessments/{assessment_id}/workflow"
+
+    # Unauthenticated users cannot recover workflow data.
+    assert client.get(workflow_url).status_code == 401
+
+    # Management can view workflow data.
+    assert client.get(
+        workflow_url,
+        headers=headers(viewer_token),
+    ).status_code == 200
+
+    # A user without assessment.view cannot recover workflow data.
+    db = context["db"]
+    view_permission = db.query(Permission).filter(
+        Permission.code == "assessment.view"
+    ).one()
+
+    db.query(RolePermission).filter(
+        RolePermission.role_id == context["viewer_role"].id,
+        RolePermission.permission_id == view_permission.id,
+    ).delete(synchronize_session=False)
+    db.commit()
+
+    denied = client.get(
+        workflow_url,
+        headers=headers(viewer_token),
+    )
+    assert denied.status_code == 403
+
+    # A manager assigned to another school cannot access this assessment.
+    db.query(UserAssignment).filter(
+        UserAssignment.user_id == context["manager"].id,
+        UserAssignment.school_id == context["school"].id,
+    ).delete(synchronize_session=False)
+
+    db.add(UserAssignment(
+        user_id=context["manager"].id,
+        scope_type="SCHOOL",
+        school_id=context["other_school"].id,
+        start_date=date(2026, 1, 1),
+        is_active=True,
+    ))
+    db.commit()
+
+    denied_school = client.get(
+        workflow_url,
+        headers=headers(manager_token),
+    )
+    assert denied_school.status_code == 403

@@ -129,6 +129,7 @@ PERMISSIONS = [
 
     # Assessments
     ("View Assessments", "assessment.view", "assessment"),
+    ("Create Assessments", "assessment.create", "assessment"),
     ("Import Assessments", "assessment.import", "assessment"),
     ("Update Assessments", "assessment.update", "assessment"),
     ("Submit Assessments", "assessment.submit", "assessment"),
@@ -221,6 +222,7 @@ ROLE_PERMISSIONS = {
         "session_evidence.update",
         "session_evidence.delete",
         "assessment.view",
+        "assessment.create",
         "assessment.import",
         "assessment.update",
         "assessment.submit",
@@ -282,6 +284,7 @@ ROLE_PERMISSIONS = {
         "session_plan.update",
         "session_plan.delete",
         "assessment.view",
+        "assessment.create",
         "assessment.import",
         "assessment.update",
         "assessment.submit",
