@@ -38,7 +38,7 @@ Thumbs.db
 *.sqlite
 *.sqlite3
 
-storage/
+/backend/storage/
 
 clean_db.py
 fix.py

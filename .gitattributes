@@ -1,0 +1,2 @@
+# Normalize mobile project text files to LF.
+frontend/mobile/** text=auto eol=lf
